@@ -1,0 +1,64 @@
+# Pattern: SSRF → IMDSv1 → IAM credential theft
+#
+# An SSRF vulnerability on an EC2 instance running IMDSv1 allows an attacker
+# to reach the 169.254.169.254 metadata service and steal temporary IAM
+# credentials.  If the attached role is overprivileged the impact escalates
+# to full account compromise.
+#
+# Severity elevated to CRITICAL because the three-step chain (SSRF → IMDS →
+# IAM role abuse) frequently leads to complete account takeover.
+
+pattern:
+  name: "SSRF to AWS credential theft"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: SSRF
+  wstg: WSTG-INPV-09
+
+pivot:
+  - type: infra_finding
+    check: aws-ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+impact: >
+  An attacker exploits the SSRF to reach the EC2 Instance Metadata Service
+  (IMDSv1, reachable at 169.254.169.254 without requiring a session token).
+  The IMDS returns temporary IAM credentials attached to the instance role.
+  Because the role is overprivileged, the attacker can use those credentials
+  for lateral movement, data exfiltration, or full account compromise.
+
+remediation_priority:
+  - summary: "Enforce IMDSv2 on all EC2 instances (breaks the chain — SSRF can no longer reach IMDS without a session token)"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Require IMDSv2 on existing instance
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required \
+        --http-endpoint enabled
+    iac_snippet: |
+      resource "aws_instance" "app" {
+        metadata_options {
+          http_tokens = "required"  # IMDSv2
+        }
+      }
+
+  - summary: "Fix the SSRF vulnerability in application code (input validation, allowlist for outbound requests)"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Apply least-privilege to the EC2 IAM role — remove overprivileged policies"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      # Detach managed policy
+      aws iam detach-role-policy \
+        --role-name <ROLE_NAME> \
+        --policy-arn <POLICY_ARN>
