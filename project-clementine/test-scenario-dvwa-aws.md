@@ -133,7 +133,7 @@ echo "VPC ID: ${VPC_ID}"
 # Create the security group
 SG_ID="$(aws ec2 create-security-group \
   --group-name "${SG_NAME}" \
-  --description "Clementine test SG — intentionally permissive" \
+  --description "Clementine test SG - intentionally permissive" \
   --vpc-id "${VPC_ID}" \
   --region "${AWS_REGION}" \
   --query 'GroupId' \
@@ -180,6 +180,13 @@ echo "AMI ID: ${AMI_ID}"
 
 # Launch the instance
 # Note: --metadata-options HttpTokens=optional enables IMDSv1 (INTENTIONAL)
+USER_DATA=$(cat <<'EOF'
+#!/bin/bash
+yum update -y
+# ... rest of your script
+EOF
+)
+
 INSTANCE_ID="$(aws ec2 run-instances \
   --image-id "${AMI_ID}" \
   --instance-type "t3.small" \
@@ -191,7 +198,9 @@ INSTANCE_ID="$(aws ec2 run-instances \
   --region "${AWS_REGION}" \
   --tag-specifications \
     'ResourceType=instance,Tags=[{Key=Name,Value=clementine-test-dvwa},{Key=Project,Value=clementine-test}]' \
-  --user-data '#!/bin/bash
+  --user-data "${USER_DATA}" \
+  --query 'Instances[0].InstanceId' \
+  --output text)"
 set -e
 # Install Docker
 yum update -y
