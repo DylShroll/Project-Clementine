@@ -22,8 +22,6 @@ target:
       - "api.example.com"
     # Paths that must never be touched, even if discovered during crawl
     exclude_paths:
-      - "/admin/dangerous-action"
-      - "/internal/reset-all"
     # Maximum requests per second across all tools (orchestrator-enforced)
     rate_limit_rps: 10
 
