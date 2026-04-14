@@ -1,0 +1,65 @@
+# Pattern: SQL injection → unencrypted RDS → undetected data exfiltration
+#
+# A SQL injection vulnerability allows an attacker to dump database contents.
+# The absence of encryption at rest means stolen database backups or snapshots
+# are immediately readable.  Absent audit logging means the breach goes
+# undetected — maximising dwell time and attacker advantage.
+
+pattern:
+  name: "SQL injection to database exfiltration"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: SQLi
+  wstg: WSTG-INPV-05
+
+pivot:
+  - type: infra_finding
+    check: rds-no-encryption-at-rest
+    relationship: same_account
+
+  - type: infra_finding
+    check: rds-no-audit-logging
+    relationship: same_account
+
+  - type: infra_finding
+    check: cloudtrail-not-enabled
+    relationship: same_account
+
+impact: >
+  The SQL injection gives the attacker direct read (and potentially write)
+  access to the database.  Because encryption at rest is disabled, any backup
+  or snapshot copy is readable by anyone with S3 access.  The absence of RDS
+  audit logging and CloudTrail means no record of the query activity exists —
+  the breach can go undetected indefinitely, maximising data loss.
+
+remediation_priority:
+  - summary: "Fix the SQL injection vulnerability — use parameterised queries / prepared statements"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Enable RDS audit logging to detect abnormal query patterns"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws rds modify-db-instance \
+        --db-instance-identifier <DB_ID> \
+        --enable-cloudwatch-logs-exports '["audit","general","slowquery"]'
+
+  - summary: "Enable encryption at rest for all RDS instances (requires snapshot restore)"
+    effort: HIGH
+    breaks_chain: false
+    cli_command: |
+      # Take snapshot, copy with encryption, restore
+      aws rds create-db-snapshot --db-instance-identifier <DB_ID> --db-snapshot-identifier <SNAPSHOT_ID>
+      aws rds copy-db-snapshot --source-db-snapshot-identifier <SNAPSHOT_ID> \
+        --target-db-snapshot-identifier <ENCRYPTED_SNAPSHOT_ID> --kms-key-id <KMS_KEY>
+
+  - summary: "Enable CloudTrail in all regions for API-level audit visibility"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws cloudtrail create-trail --name clementine-audit \
+        --s3-bucket-name <BUCKET_NAME> --is-multi-region-trail
+      aws cloudtrail start-logging --name clementine-audit

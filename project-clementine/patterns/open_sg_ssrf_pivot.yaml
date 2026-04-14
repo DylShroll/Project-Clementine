@@ -1,0 +1,53 @@
+# Pattern: Open security group + public EC2 + SSRF → internal network pivot
+#
+# A permissive security group exposes the application server directly to the
+# internet.  An SSRF vulnerability on that server can then be used to reach
+# private internal resources that are not otherwise accessible, including
+# internal APIs, databases, and the IMDS endpoint.
+
+pattern:
+  name: "Network exposure to internal pivot"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: security-group-unrestricted-ingress
+
+pivot:
+  - type: infra_finding
+    check: ec2-public-ip-assigned
+    relationship: same_account
+
+  - type: app_finding
+    category: SSRF
+    relationship: same_compute_resource
+
+impact: >
+  The publicly accessible EC2 instance has a permissive security group that
+  allows unrestricted inbound access.  An SSRF vulnerability on the hosted
+  application allows the attacker to use the server as a proxy to reach
+  internal AWS resources — private RDS databases, ElastiCache clusters,
+  internal ALBs, and the IMDS endpoint — that would otherwise be unreachable
+  from the internet.
+
+remediation_priority:
+  - summary: "Restrict security group to required ports and trusted sources only"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Revoke overly permissive rule
+      aws ec2 revoke-security-group-ingress \
+        --group-id <SG_ID> \
+        --protocol all --cidr 0.0.0.0/0
+      # Add specific rule for required access
+      aws ec2 authorize-security-group-ingress \
+        --group-id <SG_ID> \
+        --protocol tcp --port 443 --cidr <TRUSTED_CIDR>
+
+  - summary: "Place instances behind an Application Load Balancer or CloudFront — remove public IP from EC2"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Fix the SSRF vulnerability — validate and allowlist outbound request destinations"
+    effort: MEDIUM
+    breaks_chain: false

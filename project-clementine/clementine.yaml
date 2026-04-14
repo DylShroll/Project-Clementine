@@ -1,0 +1,118 @@
+# Project Clementine — example configuration
+#
+# Copy this file to clementine.yaml and replace all ${ENV_VAR} placeholders
+# with your own environment variable names.  Credentials are never stored
+# inline — they are resolved from environment variables at startup.
+#
+# Usage:
+#   export APP_USERNAME=testuser
+#   export APP_PASSWORD=testpass
+#   export AWS_AUDIT_PROFILE=security-audit
+#   clementine run --config clementine.yaml
+
+# ---------------------------------------------------------------------------
+# Target application
+# ---------------------------------------------------------------------------
+target:
+  url: "https://app.example.com"
+  scope:
+    # Only these domains (and their subdomains) will be tested
+    include_domains:
+      - "app.example.com"
+      - "api.example.com"
+    # Paths that must never be touched, even if discovered during crawl
+    exclude_paths:
+      - "/admin/dangerous-action"
+      - "/internal/reset-all"
+    # Maximum requests per second across all tools (orchestrator-enforced)
+    rate_limit_rps: 10
+
+# ---------------------------------------------------------------------------
+# Application authentication
+# ---------------------------------------------------------------------------
+auth:
+  method: "credentials" # credentials | token | cookie | none
+  username: "${APP_USERNAME}"
+  password: "${APP_PASSWORD}"
+  login_url: "https://app.example.com/login"
+  # Token-based alternative:
+  # method: "token"
+  # bearer_token: "${API_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# AWS account
+# ---------------------------------------------------------------------------
+aws:
+  profile: "${AWS_AUDIT_PROFILE}" # AWS CLI profile with SecurityAudit policy
+  regions:
+    - "us-east-1"
+    - "us-west-2"
+  account_id: "${AWS_ACCOUNT_ID}" # 12-digit AWS account ID
+
+# ---------------------------------------------------------------------------
+# Compliance frameworks
+# ---------------------------------------------------------------------------
+compliance:
+  frameworks:
+    - "cis_2.0_aws" # CIS AWS Foundations Benchmark v2.0
+    - "pci_4.0" # PCI-DSS v4.0 (add if handling card data)
+    - "soc2" # SOC 2 (add if required by contracts)
+
+# ---------------------------------------------------------------------------
+# Reporting
+# ---------------------------------------------------------------------------
+reporting:
+  formats:
+    - "html" # Interactive HTML report
+    - "json" # Machine-readable JSON
+    - "sarif" # For GitHub Code Scanning / IDE consumption
+    - "markdown" # For Git repository integration
+  output_dir: "./reports"
+  push_to_security_hub: false # Set true to push findings to AWS Security Hub
+  security_hub_region: "us-east-1"
+
+# ---------------------------------------------------------------------------
+# Orchestrator tuning
+# ---------------------------------------------------------------------------
+orchestrator:
+  max_parallel_agents: 4
+  finding_db: "sqlite:///findings.db" # or postgres://user:pass@host:5432/db
+  log_level: "INFO"
+  pause_between_phases: false # Set true for interactive step-through
+
+# ---------------------------------------------------------------------------
+# MCP server configurations
+# ---------------------------------------------------------------------------
+mcp_servers:
+  autopentest:
+    command: "docker"
+    args: ["exec", "-i", "autopentest-tools", "python", "-m", "server"]
+    env: {}
+
+  cloud_audit:
+    command: "uvx"
+    args: ["cloud-audit-mcp"]
+    env:
+      AWS_PROFILE: "${AWS_AUDIT_PROFILE}"
+      AWS_DEFAULT_REGION: "us-east-1"
+
+  prowler:
+    command: "uvx"
+    args: ["prowler-mcp-server"]
+    env: {}
+
+  aws_knowledge:
+    url: "https://knowledge-mcp.global.api.aws"
+    type: "http"
+
+  aws_docs:
+    command: "uvx"
+    args: ["awslabs.aws-documentation-mcp-server@latest"]
+    env:
+      FASTMCP_LOG_LEVEL: "ERROR"
+      AWS_DOCUMENTATION_PARTITION: "aws"
+
+  playwright:
+    command: "npx"
+    args: ["@anthropic/mcp-playwright"]
+    env: {}
