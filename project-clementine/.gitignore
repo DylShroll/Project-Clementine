@@ -12,3 +12,9 @@ node_modules/
 
 # Ignore config
 clementine.yaml
+
+# Ignore reports
+project-clementine/reports
+
+# Ignore DB's
+*.db

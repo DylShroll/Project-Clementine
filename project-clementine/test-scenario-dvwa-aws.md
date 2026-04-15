@@ -525,6 +525,7 @@ make setup
 ```
 
 ```bash
+
 docker ps | grep autopentest-tools
 # If not running:
 docker run -d --name autopentest-tools bhavsec/autopentest-tools:latest tail -f /dev/null

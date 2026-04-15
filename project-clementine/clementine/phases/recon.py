@@ -82,10 +82,17 @@ async def run_recon(
     aws_resources: list[dict] = []
 
     if mcp.is_available("cloud_audit"):
+        region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
         async with limiter:
-            # list_checks gives us the resource types the tool can enumerate
-            checks = await mcp.call_tool("cloud_audit", "list_checks", {})
-        log.debug("[Phase 1] cloud-audit has %s checks available", len(checks or []))
+            svc_map = await mcp.call_tool(
+                "cloud_audit",
+                "ListServicesInRegion",
+                {"region": region, "aws_profile": cfg.aws.profile},
+            )
+        if svc_map and isinstance(svc_map, list):
+            svc_map = svc_map[0]
+        services = (svc_map or {}).get("services") if isinstance(svc_map, dict) else []
+        log.debug("[Phase 1] cloud-audit found %s AWS services in %s", len(services or []), region)
 
     # Discover publicly enumerable AWS resources via AWS Knowledge MCP
     if mcp.is_available("aws_knowledge"):

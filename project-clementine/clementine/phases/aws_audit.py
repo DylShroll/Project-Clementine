@@ -50,18 +50,9 @@ async def run_aws_audit(
     for f in all_findings:
         await db.insert_finding(f)
 
-    # Retrieve and store the health score as assessment state
+    # Populate the resource graph from cloud-audit service map
     if mcp.is_available("cloud_audit"):
-        async with limiter:
-            health = await mcp.call_tool("cloud_audit", "get_health_score", {})
-        if health:
-            score = health if isinstance(health, (int, float)) else health.get("score", 0)
-            await db.set_state("cloud_audit_health_score", str(score))
-            log.info("[Phase 2] cloud-audit health score: %s/100", score)
-
-    # Populate the resource graph from cloud-audit attack chains
-    if mcp.is_available("cloud_audit"):
-        await _build_resource_graph(db, mcp, limiter)
+        await _build_resource_graph(db, mcp, limiter, cfg)
 
     log.info(
         "[Phase 2] AWS audit complete — %d findings stored (after dedup)",
@@ -73,62 +64,159 @@ async def run_aws_audit(
 # cloud-audit lane
 # ---------------------------------------------------------------------------
 
+_CLOUD_AUDIT_SERVICES = (
+    "guardduty",
+    "securityhub",
+    "inspector",
+    "accessanalyzer",
+)
+
+
 async def _run_cloud_audit(
     cfg: ClementineConfig,
     mcp: MCPRegistry,
     limiter: RateLimiter,
 ) -> list[Finding]:
-    """Run cloud-audit and return normalised findings."""
+    """Query the AWS Well-Architected Security MCP server for findings.
+
+    Calls GetSecurityFindings once per supported security service and
+    normalises each response to the shared Finding schema.
+    """
     if not mcp.is_available("cloud_audit"):
         log.warning("[Phase 2] cloud-audit unavailable — skipping")
         return []
 
-    # Initiate scan
-    async with limiter:
-        scan_result = await mcp.call_tool(
-            "cloud_audit",
-            "scan_aws",
-            {
-                "profile": cfg.aws.profile,
-                "regions": cfg.aws.regions,
-                "account_id": cfg.aws.account_id,
-            },
-        )
-    log.info("[Phase 2] cloud-audit scan initiated: %s", scan_result)
+    region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
+    all_findings: list[Finding] = []
 
-    # Retrieve all findings
-    async with limiter:
-        raw_findings = await mcp.call_tool("cloud_audit", "get_findings", {})
+    for service in _CLOUD_AUDIT_SERVICES:
+        async with limiter:
+            result = await mcp.call_tool(
+                "cloud_audit",
+                "GetSecurityFindings",
+                {
+                    "region": region,
+                    "service": service,
+                    "max_findings": 100,
+                    "aws_profile": cfg.aws.profile,
+                    "check_enabled": True,
+                },
+            )
+        if not result:
+            continue
+        # result may be a list (raw content) or already a dict
+        if isinstance(result, list) and result:
+            result = result[0]
+        if not isinstance(result, dict):
+            continue
+        if not result.get("enabled", True):
+            log.debug("[Phase 2] cloud-audit: %s not enabled — skipping", service)
+            continue
+        raw = result.get("findings") or []
+        parsed = _normalize_cloud_audit(raw, service)
+        log.debug("[Phase 2] cloud-audit %s: %d findings", service, len(parsed))
+        all_findings.extend(parsed)
 
-    return _normalize_cloud_audit(raw_findings or [])
+    return all_findings
 
 
-def _normalize_cloud_audit(raw: list[dict]) -> list[Finding]:
-    """Map cloud-audit finding dicts to the shared Finding schema."""
+def _normalize_cloud_audit(raw: list[dict], service: str = "aws") -> list[Finding]:
+    """Normalise AWS Well-Architected Security MCP findings to the shared schema.
+
+    The server returns raw AWS API objects whose shape varies by service:
+      GuardDuty   — Title / Description / Severity (float 1-10) / Resource.*
+      Security Hub — Title / Description / Severity.Label / Resources[].Id (ASFF)
+      Inspector   — title / description / severity (string) / resources[].id
+      AccessAnalyzer — findingType / resource / status (ACTIVE = finding)
+    We apply fallback chains to handle all four.
+    """
     results: list[Finding] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
+
+        # ---- severity -------------------------------------------------------
+        sev_raw = (
+            item.get("Severity", {}).get("Label")          # Security Hub ASFF
+            or item.get("severity")                        # Inspector / Access Analyzer
+            or item.get("Severity")                        # GuardDuty (may be float)
+            or "INFO"
+        )
+        severity = _severity_from_raw(sev_raw)
+
+        # ---- title / description --------------------------------------------
+        title = (
+            item.get("Title")
+            or item.get("title")
+            or item.get("findingType")
+            or item.get("type", "Unknown")
+        )
+        description = (
+            item.get("Description")
+            or item.get("description")
+            or item.get("detail", "")
+        )
+
+        # ---- resource -------------------------------------------------------
+        resources = item.get("Resources") or item.get("resources") or []
+        if resources:
+            r = resources[0]
+            resource_id = r.get("Id") or r.get("id") or r.get("arn")
+            resource_type_raw = r.get("Type") or r.get("type") or service
+        else:
+            resource_id = item.get("resource") or item.get("Resource")
+            resource_type_raw = item.get("resourceType") or service
+
+        # ---- account / region -----------------------------------------------
+        account_id = item.get("AccountId") or item.get("account")
+        region = item.get("Region") or item.get("region") or ""
+
+        # ---- category -------------------------------------------------------
+        category = (
+            item.get("Type")                               # GuardDuty finding type
+            or item.get("id")
+            or service.upper()
+        )
+
         results.append(Finding(
             source="cloud-audit",
             phase=2,
-            severity=Severity(item.get("severity", "INFO").upper()),
-            category=item.get("check_id", item.get("category", "AWS")),
-            title=item.get("title", item.get("check_id", "Unknown")),
-            description=item.get("description", ""),
-            resource_type=_infer_resource_type(item.get("resource_type", "")),
-            resource_id=item.get("resource_arn", item.get("resource_id")),
-            aws_account_id=item.get("account_id"),
-            aws_region=item.get("region"),
-            remediation_summary=item.get("remediation", {}).get("summary"),
-            remediation_cli=item.get("remediation", {}).get("cli"),
-            remediation_iac=item.get("remediation", {}).get("terraform"),
-            compliance_mappings=item.get("compliance_mappings"),
+            severity=severity,
+            category=str(category)[:200],
+            title=str(title)[:500],
+            description=str(description),
+            resource_type=_infer_resource_type(str(resource_type_raw)),
+            resource_id=str(resource_id) if resource_id else None,
+            aws_account_id=str(account_id) if account_id else None,
+            aws_region=str(region) if region else None,
             confidence=1.0,
-            is_validated=True,   # cloud-audit findings are confirmed misconfigs
+            is_validated=True,
             raw_source_data=item,
         ))
     return results
+
+
+def _severity_from_raw(raw) -> Severity:
+    """Normalise a severity value from any AWS service format."""
+    if isinstance(raw, (int, float)):
+        # GuardDuty uses a 1–10 float scale
+        if raw >= 7:
+            return Severity.HIGH
+        if raw >= 4:
+            return Severity.MEDIUM
+        return Severity.LOW
+    mapping = {
+        "CRITICAL": Severity.CRITICAL,
+        "HIGH": Severity.HIGH,
+        "MEDIUM": Severity.MEDIUM,
+        "LOW": Severity.LOW,
+        "INFORMATIONAL": Severity.INFO,
+        "INFO": Severity.INFO,
+        # Trusted Advisor uses ERROR/WARNING
+        "ERROR": Severity.HIGH,
+        "WARNING": Severity.MEDIUM,
+    }
+    return mapping.get(str(raw).upper(), Severity.INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -146,16 +234,15 @@ async def _run_prowler(
     """
     frameworks = cfg.compliance.frameworks or ["cis_2.0_aws"]
     with tempfile.TemporaryDirectory() as tmp:
-        output_file = Path(tmp) / "prowler_output.json"
-
+        # Prowler v4 dropped the old 'json' format; use OCSF JSON instead.
+        # Output file: <tmp>/prowler_output.ocsf.json
         cmd = [
             "prowler", "aws",
             "--profile", cfg.aws.profile,
-            "--output-formats", "json",
+            "--output-formats", "json-ocsf",
             "--output-directory", tmp,
             "--output-filename", "prowler_output",
         ]
-        # Append compliance framework flags
         for framework in frameworks:
             cmd += ["--compliance", framework]
 
@@ -168,18 +255,20 @@ async def _run_prowler(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=3600,  # Prowler can take up to an hour on large accounts
+                    timeout=3600,
                 ),
             )
             if proc_result.returncode not in (0, 3):
-                # Prowler exits 3 when findings are present (non-zero = findings)
+                # Prowler exits 3 when findings are present — any other non-zero is an error
                 log.warning(
                     "[Phase 2] Prowler exited with code %d: %s",
                     proc_result.returncode, proc_result.stderr[:500],
                 )
 
-            if output_file.exists():
-                with output_file.open() as fh:
+            # Glob for the output file — Prowler v4 names it prowler_output.ocsf.json
+            json_files = sorted(Path(tmp).glob("prowler_output*.json"))
+            if json_files:
+                with json_files[0].open() as fh:
                     raw = json.load(fh)
                 return _normalize_prowler(raw)
 
@@ -195,37 +284,80 @@ async def _run_prowler(
 
 
 def _normalize_prowler(raw: list[dict] | dict) -> list[Finding]:
-    """Map Prowler JSON output to the shared Finding schema."""
+    """Map Prowler v4 OCSF JSON output to the shared Finding schema.
+
+    Prowler v4 emits Open Cybersecurity Schema Framework (OCSF) records.
+    Key fields:
+      status_code          "FAIL" | "PASS"
+      severity             "Critical" | "High" | "Medium" | "Low" | "Informational"
+      finding_info.title   human-readable title
+      finding_info.desc    full description
+      metadata.event_code  check_id (e.g. s3_bucket_public_access_block_enabled)
+      resources[0].uid     resource ARN
+      resources[0].type    resource type string
+      cloud.account.uid    AWS account ID
+      cloud.region         AWS region
+      remediation.desc     remediation guidance
+      remediation.references  list of doc URLs
+      unmapped.compliance  compliance mapping dict
+      unmapped.service_name   AWS service name
+    """
     if isinstance(raw, dict):
         raw = raw.get("findings", [])
     results: list[Finding] = []
     for item in raw or []:
         if not isinstance(item, dict):
             continue
-        status = item.get("status", "").upper()
-        # Only store failed checks (FAIL status in Prowler)
-        if status not in ("FAIL", "FAILED"):
+
+        status_code = item.get("status_code", item.get("status", "")).upper()
+        if status_code not in ("FAIL", "FAILED"):
             continue
-        compliance = {}
-        for mapping in item.get("compliance", []):
-            framework = mapping.get("Framework", "")
-            req = mapping.get("Requirement_Id", "")
-            if framework:
-                compliance[framework] = req
+
+        finding_info = item.get("finding_info") or {}
+        metadata = item.get("metadata") or {}
+        resources = item.get("resources") or []
+        resource = resources[0] if resources else {}
+        cloud = item.get("cloud") or {}
+        remediation = item.get("remediation") or {}
+        unmapped = item.get("unmapped") or {}
+
+        check_id = metadata.get("event_code") or finding_info.get("uid", "AWS")
+        title = finding_info.get("title") or check_id
+        description = (
+            finding_info.get("desc")
+            or item.get("message")
+            or unmapped.get("status_extended", "")
+        )
+        resource_id = resource.get("uid")
+        resource_type_raw = (
+            resource.get("type")
+            or unmapped.get("service_name", "")
+        )
+        account_id = cloud.get("account", {}).get("uid")
+        region = cloud.get("region") or resource.get("region")
+
+        # Compliance mappings from the unmapped.compliance dict
+        compliance: dict = {}
+        raw_compliance = unmapped.get("compliance") or {}
+        if isinstance(raw_compliance, dict):
+            for framework, reqs in raw_compliance.items():
+                compliance[framework] = reqs if isinstance(reqs, str) else str(reqs)
+
+        references = remediation.get("references") or []
 
         results.append(Finding(
             source="prowler",
             phase=2,
             severity=Severity(_prowler_severity(item.get("severity", "LOW"))),
-            category=item.get("check_id", "AWS"),
-            title=item.get("check_title", item.get("check_id", "Unknown")),
-            description=item.get("description", item.get("status_extended", "")),
-            resource_type=_infer_resource_type(item.get("service_name", "")),
-            resource_id=item.get("resource_arn", item.get("resource_id")),
-            aws_account_id=item.get("account_id"),
-            aws_region=item.get("region"),
-            remediation_summary=item.get("remediation", {}).get("recommendation", {}).get("text"),
-            remediation_doc_url=item.get("remediation", {}).get("recommendation", {}).get("url"),
+            category=str(check_id)[:200],
+            title=str(title)[:500],
+            description=str(description),
+            resource_type=_infer_resource_type(str(resource_type_raw)),
+            resource_id=str(resource_id) if resource_id else None,
+            aws_account_id=str(account_id) if account_id else None,
+            aws_region=str(region) if region else None,
+            remediation_summary=remediation.get("desc"),
+            remediation_doc_url=references[0] if references else None,
             compliance_mappings=compliance or None,
             confidence=1.0,
             is_validated=True,
@@ -273,32 +405,36 @@ async def _build_resource_graph(
     db: FindingsDB,
     mcp: MCPRegistry,
     limiter: RateLimiter,
+    cfg: ClementineConfig,
 ) -> None:
-    """Retrieve cloud-audit attack chains and populate the resource_graph table.
+    """Use ListServicesInRegion to seed the resource graph with discovered services.
 
-    Attack chains from cloud-audit describe relationships between resources
-    (e.g., EC2 instance → IAM role), which the correlation engine uses later.
+    The well-architected security server returns a service→resource-count map;
+    we record each discovered service as a node adjacent to the account root so
+    the correlation engine has something to work with even before active scanning.
     """
+    region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
     async with limiter:
-        chains = await mcp.call_tool("cloud_audit", "get_attack_chains", {})
+        result = await mcp.call_tool(
+            "cloud_audit",
+            "ListServicesInRegion",
+            {"region": region, "aws_profile": cfg.aws.profile},
+        )
 
-    if not chains:
+    if not result:
+        return
+    if isinstance(result, list) and result:
+        result = result[0]
+    if not isinstance(result, dict):
         return
 
-    for chain in chains:
-        if not isinstance(chain, dict):
-            continue
-        resources = chain.get("resources", [])
-        # Treat the chain as a linear sequence: each resource leads_to the next
-        for i in range(len(resources) - 1):
-            src = resources[i].get("arn", "")
-            dst = resources[i + 1].get("arn", "")
-            if src and dst:
-                await db.add_resource_edge(
-                    src, dst, GraphRelationship.ROUTES_TO
-                )
+    services = result.get("services") or []
+    account_root = f"arn:aws::::{cfg.aws.account_id or 'unknown'}"
+    for svc in services:
+        svc_node = f"arn:aws:{svc}:{region}:{cfg.aws.account_id or 'unknown'}:"
+        await db.add_resource_edge(account_root, svc_node, GraphRelationship.ROUTES_TO)
 
-    log.debug("[Phase 2] Resource graph populated from cloud-audit chains")
+    log.debug("[Phase 2] Resource graph seeded with %d services from %s", len(services), region)
 
 
 # ---------------------------------------------------------------------------

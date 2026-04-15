@@ -189,6 +189,26 @@ class MCPServersConfig(BaseModel):
     aws_docs: Optional[StdioServerConfig] = None
     playwright: Optional[AnyServerConfig] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _inject_type_tags(cls, data: object) -> object:
+        """Inject a 'type' tag so the discriminated union can resolve correctly.
+
+        YAML configs that omit 'type' are disambiguated by shape:
+          - has 'url'     → http
+          - has 'command' → stdio
+        Configs that already carry an explicit 'type' are left untouched.
+        """
+        if not isinstance(data, dict):
+            return data
+        for value in data.values():
+            if isinstance(value, dict) and "type" not in value:
+                if "url" in value:
+                    value["type"] = "http"
+                elif "command" in value:
+                    value["type"] = "stdio"
+        return data
+
 
 # ---------------------------------------------------------------------------
 # Root configuration

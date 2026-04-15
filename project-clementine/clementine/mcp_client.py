@@ -154,16 +154,21 @@ class StdioMCPClient:
 
     async def close(self) -> None:
         """Terminate the child process and close the session cleanly."""
+        import anyio
+
         if self._session:
             try:
-                await self._session.__aexit__(None, None, None)
-            except Exception:
+                with anyio.CancelScope(shield=True):
+                    await self._session.__aexit__(None, None, None)
+            except BaseException:
+                # anyio raises BaseExceptionGroup (not Exception) from task groups
                 pass
             self._session = None
         if self._stdio_ctx:
             try:
-                await self._stdio_ctx.__aexit__(None, None, None)
-            except Exception:
+                with anyio.CancelScope(shield=True):
+                    await self._stdio_ctx.__aexit__(None, None, None)
+            except BaseException:
                 pass
             self._stdio_ctx = None
 
@@ -335,4 +340,9 @@ class MCPRegistry:
         return self
 
     async def __aexit__(self, *_) -> None:
-        await self.close_all()
+        import anyio
+        # Shield cleanup from anyio's teardown cancellation so every client
+        # gets a chance to close (httpx uses anyio locks; stdio clients use
+        # anyio task groups — both raise if cancelled mid-close).
+        with anyio.CancelScope(shield=True):
+            await self.close_all()
