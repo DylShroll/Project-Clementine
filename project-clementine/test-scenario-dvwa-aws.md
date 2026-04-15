@@ -56,7 +56,7 @@ All commands use the AWS CLI. Console navigation paths are provided alongside ea
 ### 1.1 Set your working variables
 
 ```bash
-export AWS_REGION="us-east-1"
+export AWS_REGION="us-east-2"
 export TEST_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 export KEY_PAIR_NAME="clementine-test-key"
 export ROLE_NAME="clementine-test-role"
@@ -70,6 +70,8 @@ echo "Region:     ${AWS_REGION}"
 ### 1.2 Create an SSH key pair
 
 ```bash
+touch ~/.ssh/clementine-test.pem
+sudo chmod 700 ~/.ssh/clementine-test.pem
 aws ec2 create-key-pair \
   --key-name "${KEY_PAIR_NAME}" \
   --region "${AWS_REGION}" \
@@ -121,6 +123,11 @@ sleep 10
 ### 1.4 Create an intentionally permissive security group
 
 ```bash
+# Verify required variables are still set before proceeding
+# If either is blank, re-run step 1.1 to restore them
+echo ${AWS_REGION}
+echo ${SG_NAME}
+
 # Get the default VPC ID
 VPC_ID="$(aws ec2 describe-vpcs \
   --filters 'Name=isDefault,Values=true' \
@@ -178,15 +185,32 @@ AMI_ID="$(aws ec2 describe-images \
 
 echo "AMI ID: ${AMI_ID}"
 
-# Launch the instance
-# Note: --metadata-options HttpTokens=optional enables IMDSv1 (INTENTIONAL)
-USER_DATA=$(cat <<'EOF'
+# Write the EC2 boot script to a local temp file.
+# Using file:// prevents these Linux commands from being run in your local shell.
+cat > /tmp/clementine-userdata.sh <<'USERDATA'
 #!/bin/bash
+# This script runs on the EC2 instance at first boot, not on your local machine.
 yum update -y
-# ... rest of your script
-EOF
-)
 
+# Install and start Docker
+yum install -y docker
+systemctl start docker
+systemctl enable docker
+
+# Pull and run DVWA on port 80
+docker run -d \
+  --name dvwa \
+  --restart unless-stopped \
+  -p 80:80 \
+  -e RECAPTCHA_PRIV_KEY="" \
+  -e RECAPTCHA_PUB_KEY="" \
+  vulnerables/web-dvwa
+
+echo "DVWA started at $(date)" > /var/log/clementine-setup.log
+USERDATA
+
+# Launch the instance.
+# Note: HttpTokens=optional enables IMDSv1 — INTENTIONAL MISCONFIGURATION for testing.
 INSTANCE_ID="$(aws ec2 run-instances \
   --image-id "${AMI_ID}" \
   --instance-type "t3.small" \
@@ -198,28 +222,7 @@ INSTANCE_ID="$(aws ec2 run-instances \
   --region "${AWS_REGION}" \
   --tag-specifications \
     'ResourceType=instance,Tags=[{Key=Name,Value=clementine-test-dvwa},{Key=Project,Value=clementine-test}]' \
-  --user-data "${USER_DATA}" \
-  --query 'Instances[0].InstanceId' \
-  --output text)"
-set -e
-# Install Docker
-yum update -y
-yum install -y docker
-systemctl start docker
-systemctl enable docker
-
-# Run DVWA — publicly accessible on port 80
-docker run -d \
-  --name dvwa \
-  --restart unless-stopped \
-  -p 80:80 \
-  -e RECAPTCHA_PRIV_KEY="" \
-  -e RECAPTCHA_PUB_KEY="" \
-  vulnerables/web-dvwa
-
-# Write a setup marker for troubleshooting
-echo "DVWA started at $(date)" > /var/log/clementine-setup.log
-' \
+  --user-data "file:///tmp/clementine-userdata.sh" \
   --query 'Instances[0].InstanceId' \
   --output text)"
 
@@ -343,8 +346,8 @@ SSH into the instance and add the stale access key as a comment in the DVWA conf
 ```bash
 ssh -i ~/.ssh/clementine-test.pem ec2-user@"${PUBLIC_DNS}"
 
-# On the EC2 instance:
-docker exec dvwa bash -c "cat >> /var/www/html/config/config.inc.php << 'EOF'
+# On the EC2 instance — sudo is required because ec2-user is not in the docker group:
+sudo docker exec dvwa bash -c "cat >> /var/www/html/config/config.inc.php << 'EOF'
 
 # TODO: remove before pushing
 # aws_access_key_id     = AKIA<YOUR_KEY_ID_HERE>
@@ -516,6 +519,14 @@ aws sts get-caller-identity
 ### 5.2 Ensure AutoPentest AI container is running
 
 ```bash
+git clone https://github.com/bhavsec/autopentest-ai.git
+cd autopentest-ai
+make setup
+```
+
+```bash
+
+
 docker ps | grep autopentest-tools
 # If not running:
 docker run -d --name autopentest-tools bhavsec/autopentest-tools:latest tail -f /dev/null

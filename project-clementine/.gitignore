@@ -1,0 +1,14 @@
+# Ignore Node modules
+node_modules/
+
+# Ignore log files
+*.log
+
+# Ignore environment variables
+.env
+
+# Ignore OS X system files
+.DS_Store
+
+# Ignore config
+clementine.yaml
