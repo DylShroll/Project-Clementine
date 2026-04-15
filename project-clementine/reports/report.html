@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Clementine — Security Assessment Report</title>
+<style>
+  :root {
+    --critical: #dc2626; --high: #ea580c; --medium: #d97706;
+    --low: #65a30d; --info: #2563eb;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f8fafc; color: #1e293b; }
+  header { background: #0f172a; color: #f8fafc; padding: 1.5rem 2rem; }
+  header h1 { font-size: 1.5rem; }
+  header p { opacity: .7; font-size: .875rem; margin-top: .25rem; }
+  main { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+  section { margin-bottom: 2.5rem; }
+  h2 { font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem; border-bottom: 2px solid #e2e8f0; padding-bottom: .5rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin-bottom: .5rem; }
+  .badge { display: inline-block; padding: .2rem .6rem; border-radius: 9999px; font-size: .75rem; font-weight: 700; color: #fff; }
+  .badge-CRITICAL { background: var(--critical); }
+  .badge-HIGH { background: var(--high); }
+  .badge-MEDIUM { background: var(--medium); }
+  .badge-LOW { background: var(--low); }
+  .badge-INFO { background: var(--info); }
+  .summary-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; }
+  .summary-card { background: #fff; border-radius: .5rem; padding: 1rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .summary-card .count { font-size: 2rem; font-weight: 800; }
+  .chain-card, .finding-card { background: #fff; border-radius: .5rem; padding: 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .chain-card { border-left: 4px solid var(--critical); }
+  .chain-card.HIGH { border-color: var(--high); }
+  .chain-card.MEDIUM { border-color: var(--medium); }
+  details summary { cursor: pointer; user-select: none; }
+  details summary:hover { opacity: .8; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: .375rem; font-size: .8rem; overflow-x: auto; margin-top: .75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  th { text-align: left; padding: .5rem .75rem; background: #f1f5f9; border-bottom: 2px solid #e2e8f0; }
+  td { padding: .5rem .75rem; border-bottom: 1px solid #e2e8f0; }
+  .filter-bar { display: flex; gap: .5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  select { padding: .375rem .75rem; border: 1px solid #cbd5e1; border-radius: .375rem; font-size: .875rem; }
+  .narrative { font-size: .875rem; line-height: 1.6; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Project Clementine — Security Assessment Report</h1>
+  <p>Target: https://app.example.com &bull; Generated: 2026-04-15 13:04 UTC</p>
+</header>
+<main>
+
+<!-- Executive Summary -->
+<section>
+  <h2>Executive Summary</h2>
+  <div class="summary-grid">
+    
+    <div class="summary-card">
+      <div class="count badge badge-CRITICAL">0</div>
+      <div style="margin-top:.5rem;font-size:.875rem">CRITICAL</div>
+    </div>
+    
+    <div class="summary-card">
+      <div class="count badge badge-HIGH">0</div>
+      <div style="margin-top:.5rem;font-size:.875rem">HIGH</div>
+    </div>
+    
+    <div class="summary-card">
+      <div class="count badge badge-MEDIUM">0</div>
+      <div style="margin-top:.5rem;font-size:.875rem">MEDIUM</div>
+    </div>
+    
+    <div class="summary-card">
+      <div class="count badge badge-LOW">0</div>
+      <div style="margin-top:.5rem;font-size:.875rem">LOW</div>
+    </div>
+    
+    <div class="summary-card">
+      <div class="count badge badge-INFO">0</div>
+      <div style="margin-top:.5rem;font-size:.875rem">INFO</div>
+    </div>
+    
+  </div>
+  <p style="margin-top:1rem">
+    <strong>Attack Chains:</strong> 0 &bull;
+    <strong>AWS Health Score:</strong> N/A/100
+  </p>
+  
+</section>
+
+<!-- Attack Chains -->
+
+
+<!-- Findings -->
+<section>
+  <h2>Findings</h2>
+  <div class="filter-bar">
+    <select id="sev-filter" onchange="applyFilters()">
+      <option value="">All Severities</option>
+      <option>CRITICAL</option><option>HIGH</option><option>MEDIUM</option><option>LOW</option><option>INFO</option>
+    </select>
+    <select id="src-filter" onchange="applyFilters()">
+      <option value="">All Sources</option>
+      
+    </select>
+  </div>
+  
+</section>
+
+
+
+</main>
+<script>
+function applyFilters() {
+  const sev = document.getElementById('sev-filter').value;
+  const src = document.getElementById('src-filter').value;
+  document.querySelectorAll('.finding-card').forEach(el => {
+    const sevMatch = !sev || el.dataset.severity === sev;
+    const srcMatch = !src || el.dataset.source === src;
+    el.style.display = (sevMatch && srcMatch) ? '' : 'none';
+  });
+}
+</script>
+</body>
+</html>

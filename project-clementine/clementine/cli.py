@@ -15,10 +15,11 @@ without re-running the assessment.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
 from pathlib import Path
+
+import anyio
 
 import click
 
@@ -100,7 +101,7 @@ def run(config: Path, formats: tuple[str, ...], output: Path | None, debug: bool
             report_dir = await orch.run()
         click.echo(f"\nAssessment complete. Reports written to: {report_dir}")
 
-    asyncio.run(_run())
+    anyio.run(_run)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ def check(config: Path, max_severity: str) -> None:
         click.echo(f"PASS: No findings at {max_severity} or above.")
         return 0
 
-    exit_code = asyncio.run(_check())
+    exit_code = anyio.run(_check)
     sys.exit(exit_code)
 
 

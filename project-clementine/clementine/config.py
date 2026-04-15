@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from typing import Annotated, Union
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +63,12 @@ class ScopeConfig(BaseModel):
     tool call — nothing outside the allowed domains/paths is ever tested.
     """
     include_domains: list[str]
-    exclude_paths: list[str] = []
+    exclude_paths: Optional[list[str]] = []
+
+    @field_validator("exclude_paths", mode="before")
+    @classmethod
+    def _coerce_none_to_empty(cls, v: object) -> list[str]:
+        return v if v is not None else []
     # Maximum requests per second the orchestrator will issue across all tools
     rate_limit_rps: int = 10
 
@@ -147,6 +153,7 @@ class OrchestratorConfig(BaseModel):
 
 class StdioServerConfig(BaseModel):
     """Configuration for an MCP server accessed via stdio transport."""
+    type: Literal["stdio"] = "stdio"
     command: str
     args: list[str] = []
     # Extra environment variables passed to the child process (resolved from env)
@@ -155,8 +162,18 @@ class StdioServerConfig(BaseModel):
 
 class HttpServerConfig(BaseModel):
     """Configuration for a remote MCP server accessed via HTTP transport."""
-    url: str
     type: Literal["http"] = "http"
+    url: str
+    # Optional headers forwarded with every request (e.g. Authorization: Bearer …)
+    headers: dict[str, str] = {}
+
+
+# Discriminated union — Pydantic picks the right model based on the `type` field.
+# Configs without an explicit `type` key default to stdio.
+AnyServerConfig = Annotated[
+    Union[StdioServerConfig, HttpServerConfig],
+    Field(discriminator="type"),
+]
 
 
 class MCPServersConfig(BaseModel):
@@ -165,12 +182,12 @@ class MCPServersConfig(BaseModel):
     All servers are optional so the orchestrator can gracefully degrade when
     a non-critical server is unavailable.
     """
-    autopentest: Optional[StdioServerConfig] = None
-    cloud_audit: Optional[StdioServerConfig] = None
-    prowler: Optional[StdioServerConfig] = None
+    autopentest: Optional[AnyServerConfig] = None
+    cloud_audit: Optional[AnyServerConfig] = None
+    prowler: Optional[AnyServerConfig] = None
     aws_knowledge: Optional[HttpServerConfig] = None
     aws_docs: Optional[StdioServerConfig] = None
-    playwright: Optional[StdioServerConfig] = None
+    playwright: Optional[AnyServerConfig] = None
 
 
 # ---------------------------------------------------------------------------

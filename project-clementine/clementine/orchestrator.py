@@ -105,10 +105,17 @@ class Orchestrator:
         persisted = await self._db.get_state(_STATE_KEY)
         if persisted:
             try:
-                self._state = AssessmentState(persisted)
-                log.info("Resuming from state: %s", self._state)
+                restored = AssessmentState(persisted)
             except ValueError:
+                restored = AssessmentState.INITIALIZED
+            # COMPLETE / FAILED mean a prior run already finished — start fresh
+            # rather than immediately skipping everything or repeating a failure.
+            if restored in (AssessmentState.COMPLETE, AssessmentState.FAILED):
                 self._state = AssessmentState.INITIALIZED
+                log.info("Previous run ended with %s — starting fresh assessment", restored)
+            else:
+                self._state = restored
+                log.info("Resuming from state: %s", self._state)
 
         # Import phases lazily so each module is only loaded when needed
         from .phases.recon import run_recon
@@ -157,25 +164,32 @@ class Orchestrator:
 
     async def _setup_mcp_servers(self) -> None:
         """Register all configured MCP servers and run an initial health check."""
-        mcp_cfg = self._cfg.mcp_servers
+        from .config import HttpServerConfig
 
-        if mcp_cfg.autopentest:
-            self._mcp.register_stdio("autopentest", mcp_cfg.autopentest)
-        if mcp_cfg.cloud_audit:
-            self._mcp.register_stdio("cloud_audit", mcp_cfg.cloud_audit)
-        if mcp_cfg.prowler:
-            self._mcp.register_stdio("prowler", mcp_cfg.prowler)
-        if mcp_cfg.aws_knowledge:
-            self._mcp.register_http("aws_knowledge", mcp_cfg.aws_knowledge)
-        if mcp_cfg.aws_docs:
-            self._mcp.register_stdio("aws_docs", mcp_cfg.aws_docs)
-        if mcp_cfg.playwright:
-            self._mcp.register_stdio("playwright", mcp_cfg.playwright)
+        mcp_cfg = self._cfg.mcp_servers
+        servers = [
+            ("autopentest",  mcp_cfg.autopentest),
+            ("cloud_audit",  mcp_cfg.cloud_audit),
+            ("prowler",      mcp_cfg.prowler),
+            ("aws_knowledge", mcp_cfg.aws_knowledge),
+            ("aws_docs",     mcp_cfg.aws_docs),
+            ("playwright",   mcp_cfg.playwright),
+        ]
+        for name, cfg in servers:
+            if cfg is None:
+                continue
+            if isinstance(cfg, HttpServerConfig):
+                self._mcp.register_http(name, cfg)
+            else:
+                self._mcp.register_stdio(name, cfg)
 
         health = await self._mcp.ping_all()
         for name, alive in health.items():
             status = "OK" if alive else "UNAVAILABLE"
             log.info("  MCP server %-20s %s", name, status)
+            if not alive:
+                # Mark as unavailable so phases skip tool calls on dead servers
+                self._mcp._unavailable.add(name)
 
     # ------------------------------------------------------------------
     # State helpers

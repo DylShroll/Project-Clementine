@@ -21,7 +21,7 @@ target:
       - "app.example.com"
       - "api.example.com"
     # Paths that must never be touched, even if discovered during crawl
-    exclude_paths:
+    exclude_paths: []
     # Maximum requests per second across all tools (orchestrator-enforced)
     rate_limit_rps: 10
 
@@ -82,22 +82,36 @@ orchestrator:
 # MCP server configurations
 # ---------------------------------------------------------------------------
 mcp_servers:
+  # AutoPentest AI — 109 OWASP WSTG tests, 31 PortSwigger technique guides,
+  # 68+ MCP tools, 27 pre-installed security tools in Docker.
+  # Setup: git clone https://github.com/bhavsec/autopentest-ai && cd autopentest-ai && make setup
+  # Then set AUTOPENTEST_DIR to the cloned repo path.
   autopentest:
-    command: "docker"
-    args: ["exec", "-i", "autopentest-tools", "python", "-m", "server"]
+    command: "uv"
+    args: ["--directory", "${AUTOPENTEST_DIR}/server", "run", "server.py"]
     env: {}
 
+  # AWS Well-Architected Security Assessment MCP Server (AWS Labs)
+  # Assesses your AWS environment against the Well-Architected Security Pillar.
+  # Requires AWS credentials with read-only access to GuardDuty, Security Hub,
+  # Inspector, and IAM Access Analyzer.
   cloud_audit:
     command: "uvx"
-    args: ["cloud-audit-mcp"]
+    args: ["awslabs.well-architected-security-mcp-server@latest"]
     env:
       AWS_PROFILE: "${AWS_AUDIT_PROFILE}"
-      AWS_DEFAULT_REGION: "us-east-1"
+      AWS_REGION: "us-east-1"
+      FASTMCP_LOG_LEVEL: "ERROR"
 
-  prowler:
-    command: "uvx"
-    args: ["prowler-mcp-server"]
-    env: {}
+  # Prowler Cloud MCP — optional, requires a Prowler Cloud API key.
+  # The Prowler CLI (pip install prowler) is used for actual scanning regardless
+  # of whether this is configured — see phases/aws_audit.py:_run_prowler().
+  # Uncomment and set PROWLER_API_KEY if you have a Prowler Cloud account.
+  # prowler:
+  #   url: "https://mcp.prowler.com/mcp"
+  #   type: "http"
+  #   headers:
+  #     Authorization: "Bearer ${PROWLER_API_KEY}"
 
   aws_knowledge:
     url: "https://knowledge-mcp.global.api.aws"
@@ -110,7 +124,9 @@ mcp_servers:
       FASTMCP_LOG_LEVEL: "ERROR"
       AWS_DOCUMENTATION_PARTITION: "aws"
 
+  # Official Microsoft Playwright MCP — browser automation for DOM XSS proofs,
+  # clickjacking, and JS-rendered authentication testing.
   playwright:
     command: "npx"
-    args: ["@anthropic/mcp-playwright"]
+    args: ["-y", "@playwright/mcp@latest"]
     env: {}

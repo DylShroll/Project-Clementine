@@ -267,11 +267,21 @@ class FindingsDB:
                 "Only sqlite:/// is currently supported."
             )
 
-        async with aiosqlite.connect(db_path) as conn:
+        # Open the connection manually so we can shield the close from anyio's
+        # cancellation cascade.  aiosqlite uses asyncio Futures for its
+        # background thread; if anyio cancels the scope during teardown those
+        # futures are cancelled too, raising CancelledError inside close().
+        import anyio
+        conn_cm = aiosqlite.connect(db_path)
+        conn = await conn_cm.__aenter__()
+        try:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(_SCHEMA_SQL)
             await conn.commit()
             yield cls(conn)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await conn_cm.__aexit__(None, None, None)
 
     # ------------------------------------------------------------------
     # State machine persistence

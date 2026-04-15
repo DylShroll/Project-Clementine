@@ -92,8 +92,14 @@ async def run_recon(
         async with limiter:
             result = await mcp.call_tool(
                 "aws_knowledge",
-                "search",
-                {"query": f"AWS services used by {target_url} CloudFront ALB API Gateway S3"},
+                "aws___search_documentation",
+                {
+                    "search_phrase": (
+                        f"AWS services used by {target_url} "
+                        "CloudFront ALB API Gateway S3"
+                    ),
+                    "topics": ["general"],
+                },
             )
         log.debug("[Phase 1] AWS Knowledge search returned %s items", len(result or []))
 

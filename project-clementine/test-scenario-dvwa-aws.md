@@ -519,14 +519,12 @@ aws sts get-caller-identity
 ### 5.2 Ensure AutoPentest AI container is running
 
 ```bash
-git clone https://github.com/bhavsec/autopentest-ai.git
+git clone https://github.com/dylshroll/autopentest-ai.git
 cd autopentest-ai
 make setup
 ```
 
 ```bash
-
-
 docker ps | grep autopentest-tools
 # If not running:
 docker run -d --name autopentest-tools bhavsec/autopentest-tools:latest tail -f /dev/null

@@ -108,10 +108,13 @@ class StdioMCPClient:
             args=self._cfg.args,
             env=env,
         )
-        # stdio_client is an async context manager; store the context so we
-        # can close it later in close().
-        self._stdio_ctx = stdio_client(params)
-        read, write = await self._stdio_ctx.__aenter__()
+        # Only store _stdio_ctx after __aenter__ succeeds.  If __aenter__
+        # raises (e.g. the child process exits immediately), leaving
+        # _stdio_ctx pointing at a half-initialised async generator causes
+        # anyio cancel-scope errors in close() later.
+        ctx = stdio_client(params)
+        read, write = await ctx.__aenter__()
+        self._stdio_ctx = ctx
 
         session = ClientSession(read, write)
         await session.__aenter__()
@@ -192,8 +195,9 @@ class HttpMCPClient:
     def __init__(self, name: str, cfg: HttpServerConfig) -> None:
         self.name = name
         self._base_url = cfg.url.rstrip("/")
-        # Share one httpx session across all calls for connection pooling
-        self._http = httpx.AsyncClient(timeout=30.0)
+        # Share one httpx session across all calls for connection pooling.
+        # cfg.headers are forwarded with every request (e.g. Bearer auth).
+        self._http = httpx.AsyncClient(timeout=30.0, headers=cfg.headers)
         self._call_id = 0
 
     def _next_id(self) -> int:
