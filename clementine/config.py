@@ -211,6 +211,57 @@ class MCPServersConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# AI configuration (Anthropic-backed triage + discovery)
+# ---------------------------------------------------------------------------
+
+class AITriageConfig(BaseModel):
+    """Per-feature tuning for the finding-triage pass."""
+    enabled: bool = True
+    # Findings are batched so each request fits comfortably in context while
+    # still getting amortized prompt-cache hits on the system prompt / schema.
+    batch_size: int = 10
+    # Confidence below this threshold marks a finding as likely false-positive.
+    false_positive_threshold: float = 0.35
+
+
+class AIDiscoveryConfig(BaseModel):
+    """Per-feature tuning for novel attack-chain discovery."""
+    enabled: bool = True
+    # Cap discovery output so the model can't flood the database with chains
+    # of dubious quality; matches the spirit of the rule-based correlator's
+    # conservative pattern set.
+    max_chains: int = 10
+    # Chains the model scores below this confidence are dropped, since the
+    # AI-discovery path is inherently more speculative than rule patterns.
+    min_confidence: float = 0.5
+
+
+class AIConfig(BaseModel):
+    """Anthropic Claude integration for triage and novel-chain discovery.
+
+    Resolved from environment variables at load time; if the API key is
+    missing the orchestrator logs a warning and skips the AI phases rather
+    than failing the entire assessment.
+    """
+    enabled: bool = True
+    # Resolved from ${ANTHROPIC_API_KEY} in the YAML; empty means "disabled".
+    api_key: Optional[str] = None
+    # Default model — Opus 4.7 with adaptive thinking. Override only if a
+    # tenant has a strong reason (e.g. pinning a cheaper model for triage).
+    model: str = "claude-opus-4-7"
+    # Effort controls overall token spend AND thinking depth on Opus 4.7.
+    # 'high' is the sweet spot for intelligence-sensitive security analysis.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # How many parallel Anthropic requests may be in flight at once. Kept
+    # conservative so a large assessment doesn't exhaust rate limits.
+    max_parallel_requests: int = 4
+    # Retry budget for transient API errors (rate-limit / 5xx).
+    max_retries: int = 3
+    triage: AITriageConfig = AITriageConfig()
+    discovery: AIDiscoveryConfig = AIDiscoveryConfig()
+
+
+# ---------------------------------------------------------------------------
 # Root configuration
 # ---------------------------------------------------------------------------
 
@@ -223,6 +274,7 @@ class ClementineConfig(BaseModel):
     reporting: ReportingConfig = ReportingConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
     mcp_servers: MCPServersConfig = MCPServersConfig()
+    ai: AIConfig = AIConfig()
 
     @model_validator(mode="before")
     @classmethod

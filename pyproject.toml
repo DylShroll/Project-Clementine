@@ -27,6 +27,8 @@ dependencies = [
     "click>=8.1",
     # AWS SDK — used to push findings to Security Hub
     "boto3>=1.34",
+    # Anthropic SDK — powers AI triage and novel-chain discovery
+    "anthropic>=0.43.0",
 ]
 
 [project.scripts]

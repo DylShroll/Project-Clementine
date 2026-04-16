@@ -37,6 +37,9 @@ class AssessmentState(str, Enum):
     AWS_AUDIT_COMPLETE = "AWS_AUDIT_COMPLETE"
     APP_TEST_RUNNING = "APP_TEST_RUNNING"
     APP_TEST_COMPLETE = "APP_TEST_COMPLETE"
+    # Phase 3.5 — LLM finding triage (optional, skipped when AI disabled)
+    AI_TRIAGE_RUNNING = "AI_TRIAGE_RUNNING"
+    AI_TRIAGE_COMPLETE = "AI_TRIAGE_COMPLETE"
     CORRELATION_RUNNING = "CORRELATION_RUNNING"
     CORRELATION_COMPLETE = "CORRELATION_COMPLETE"
     REPORTING = "REPORTING"
@@ -121,6 +124,7 @@ class Orchestrator:
         from .phases.recon import run_recon
         from .phases.aws_audit import run_aws_audit
         from .phases.app_test import run_app_test
+        from .phases.ai_triage import run_ai_triage
         from .phases.correlate import run_correlation
         from .phases.report import run_reporting
 
@@ -128,6 +132,7 @@ class Orchestrator:
             (AssessmentState.RECON_RUNNING, AssessmentState.RECON_COMPLETE, run_recon),
             (AssessmentState.AWS_AUDIT_RUNNING, AssessmentState.AWS_AUDIT_COMPLETE, run_aws_audit),
             (AssessmentState.APP_TEST_RUNNING, AssessmentState.APP_TEST_COMPLETE, run_app_test),
+            (AssessmentState.AI_TRIAGE_RUNNING, AssessmentState.AI_TRIAGE_COMPLETE, run_ai_triage),
             (AssessmentState.CORRELATION_RUNNING, AssessmentState.CORRELATION_COMPLETE, run_correlation),
             (AssessmentState.REPORTING, AssessmentState.COMPLETE, run_reporting),
         ]
@@ -203,6 +208,8 @@ class Orchestrator:
         AssessmentState.AWS_AUDIT_COMPLETE,
         AssessmentState.APP_TEST_RUNNING,
         AssessmentState.APP_TEST_COMPLETE,
+        AssessmentState.AI_TRIAGE_RUNNING,
+        AssessmentState.AI_TRIAGE_COMPLETE,
         AssessmentState.CORRELATION_RUNNING,
         AssessmentState.CORRELATION_COMPLETE,
         AssessmentState.REPORTING,

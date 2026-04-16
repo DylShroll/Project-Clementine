@@ -81,6 +81,32 @@ orchestrator:
   pause_between_phases: false           # Set true for interactive step-through
 
 # ---------------------------------------------------------------------------
+# AI — Anthropic Claude for finding triage and novel attack-chain discovery
+# ---------------------------------------------------------------------------
+# If ANTHROPIC_API_KEY is unset (or ai.enabled is false), the triage phase is
+# skipped and correlation runs rule-based only, so Clementine still produces a
+# full report. AI simply makes findings sharper and chains richer when enabled.
+ai:
+  enabled: true
+  api_key: "${ANTHROPIC_API_KEY}"
+  model: "claude-opus-4-7"
+  effort: "high"                  # low | medium | high | xhigh | max
+  max_parallel_requests: 4        # Parallel Anthropic calls across AI phases
+  max_retries: 3                  # Transient-error retry budget (rate limits, 5xx)
+
+  # Phase 3.5 — per-finding confidence scoring and false-positive flagging.
+  triage:
+    enabled: true
+    batch_size: 10                # Findings per request (balances context + cache)
+    false_positive_threshold: 0.35
+
+  # Phase 4 — novel attack-chain discovery on top of the rule-based correlator.
+  discovery:
+    enabled: true
+    max_chains: 10                # Hard cap on accepted AI-proposed chains
+    min_confidence: 0.5           # Drop proposals below this confidence
+
+# ---------------------------------------------------------------------------
 # MCP server configurations
 # ---------------------------------------------------------------------------
 mcp_servers:

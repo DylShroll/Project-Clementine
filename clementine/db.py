@@ -104,6 +104,10 @@ class Finding:
     confidence: float = 1.0
     is_validated: bool = False
     raw_source_data: Optional[dict] = None  # original tool JSON
+    # AI triage outputs — populated by the ai_triage phase, None until then
+    triage_confidence: Optional[float] = None
+    triage_is_false_positive: Optional[bool] = None
+    triage_notes: Optional[str] = None
 
 
 @dataclass
@@ -116,6 +120,8 @@ class AttackChain:
     entry_finding_id: Optional[str] = None
     breach_cost_low: Optional[float] = None
     breach_cost_high: Optional[float] = None
+    # 'pattern' for rule-based matches; 'ai-discovered' for LLM-proposed chains
+    chain_source: str = "pattern"
 
 
 @dataclass
@@ -152,28 +158,32 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS findings (
-    id                  TEXT PRIMARY KEY,
-    source              TEXT NOT NULL,
-    phase               INTEGER NOT NULL,
-    severity            TEXT NOT NULL,
-    category            TEXT NOT NULL,
-    title               TEXT NOT NULL,
-    description         TEXT NOT NULL,
-    resource_type       TEXT,
-    resource_id         TEXT,
-    aws_account_id      TEXT,
-    aws_region          TEXT,
-    evidence_type       TEXT,
-    evidence_data       TEXT,        -- JSON blob
-    remediation_summary TEXT,
-    remediation_cli     TEXT,
-    remediation_iac     TEXT,
-    remediation_doc_url TEXT,
-    compliance_mappings TEXT,        -- JSON blob
-    confidence          REAL DEFAULT 1.0,
-    is_validated        INTEGER DEFAULT 0,
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    raw_source_data     TEXT         -- JSON blob
+    id                       TEXT PRIMARY KEY,
+    source                   TEXT NOT NULL,
+    phase                    INTEGER NOT NULL,
+    severity                 TEXT NOT NULL,
+    category                 TEXT NOT NULL,
+    title                    TEXT NOT NULL,
+    description              TEXT NOT NULL,
+    resource_type            TEXT,
+    resource_id              TEXT,
+    aws_account_id           TEXT,
+    aws_region               TEXT,
+    evidence_type            TEXT,
+    evidence_data            TEXT,        -- JSON blob
+    remediation_summary      TEXT,
+    remediation_cli          TEXT,
+    remediation_iac          TEXT,
+    remediation_doc_url      TEXT,
+    compliance_mappings      TEXT,        -- JSON blob
+    confidence               REAL DEFAULT 1.0,
+    is_validated             INTEGER DEFAULT 0,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    raw_source_data          TEXT,        -- JSON blob
+    -- LLM-triage outputs (NULL until the ai_triage phase has run)
+    triage_confidence        REAL,
+    triage_is_false_positive INTEGER,
+    triage_notes             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS attack_chains (
@@ -184,7 +194,9 @@ CREATE TABLE IF NOT EXISTS attack_chains (
     entry_finding    TEXT REFERENCES findings(id),
     breach_cost_low  REAL,
     breach_cost_high REAL,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- 'pattern' for rule-matched chains; 'ai-discovered' for LLM-proposed chains
+    chain_source     TEXT NOT NULL DEFAULT 'pattern'
 );
 
 CREATE TABLE IF NOT EXISTS chain_components (
@@ -223,6 +235,27 @@ CREATE TABLE IF NOT EXISTS assessment_state (
     value TEXT NOT NULL
 );
 """
+
+# Lightweight, idempotent migrations for DBs created before the triage /
+# ai-discovery columns existed. SQLite has no "ADD COLUMN IF NOT EXISTS" so
+# we introspect the table and only issue ALTERs for missing columns.
+_MIGRATIONS: list[tuple[str, str, str]] = [
+    # (table, column, full ALTER TABLE clause)
+    ("findings",      "triage_confidence",        "ALTER TABLE findings ADD COLUMN triage_confidence REAL"),
+    ("findings",      "triage_is_false_positive", "ALTER TABLE findings ADD COLUMN triage_is_false_positive INTEGER"),
+    ("findings",      "triage_notes",             "ALTER TABLE findings ADD COLUMN triage_notes TEXT"),
+    ("attack_chains", "chain_source",             "ALTER TABLE attack_chains ADD COLUMN chain_source TEXT NOT NULL DEFAULT 'pattern'"),
+]
+
+
+async def _apply_migrations(conn: aiosqlite.Connection) -> None:
+    """Add columns introduced after the initial schema for pre-existing DBs."""
+    for table, column, ddl in _MIGRATIONS:
+        async with conn.execute(f"PRAGMA table_info({table})") as cur:
+            existing = {row["name"] for row in await cur.fetchall()}
+        if column not in existing:
+            await conn.execute(ddl)
+    await conn.commit()
 
 # ---------------------------------------------------------------------------
 # Database class
@@ -278,6 +311,7 @@ class FindingsDB:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(_SCHEMA_SQL)
             await conn.commit()
+            await _apply_migrations(conn)
             yield cls(conn)
         finally:
             with anyio.CancelScope(shield=True):
@@ -379,6 +413,27 @@ class FindingsDB:
             row = await cur.fetchone()
         return _row_to_finding(row) if row else None
 
+    async def update_finding_triage(
+        self,
+        finding_id: str,
+        confidence: float,
+        is_false_positive: bool,
+        notes: str,
+    ) -> None:
+        """Persist the LLM-triage verdict for a finding."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                UPDATE findings
+                SET triage_confidence = ?,
+                    triage_is_false_positive = ?,
+                    triage_notes = ?
+                WHERE id = ?
+                """,
+                (confidence, int(is_false_positive), notes, finding_id),
+            )
+            await self._conn.commit()
+
     # ------------------------------------------------------------------
     # Attack chains CRUD
     # ------------------------------------------------------------------
@@ -395,13 +450,14 @@ class FindingsDB:
                 """
                 INSERT OR IGNORE INTO attack_chains
                     (id, pattern_name, severity, narrative, entry_finding,
-                     breach_cost_low, breach_cost_high)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     breach_cost_low, breach_cost_high, chain_source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     chain.id, chain.pattern_name, chain.severity.value,
                     chain.narrative, chain.entry_finding_id,
                     chain.breach_cost_low, chain.breach_cost_high,
+                    chain.chain_source,
                 ),
             )
             for comp in components:
@@ -558,6 +614,13 @@ def _row_to_finding(row: aiosqlite.Row) -> Finding:
         confidence=d.get("confidence", 1.0),
         is_validated=bool(d.get("is_validated", 0)),
         raw_source_data=json.loads(d["raw_source_data"]) if d.get("raw_source_data") else None,
+        triage_confidence=d.get("triage_confidence"),
+        triage_is_false_positive=(
+            bool(d["triage_is_false_positive"])
+            if d.get("triage_is_false_positive") is not None
+            else None
+        ),
+        triage_notes=d.get("triage_notes"),
     )
 
 
@@ -571,6 +634,7 @@ def _row_to_chain(row: aiosqlite.Row) -> AttackChain:
         entry_finding_id=d.get("entry_finding"),
         breach_cost_low=d.get("breach_cost_low"),
         breach_cost_high=d.get("breach_cost_high"),
+        chain_source=d.get("chain_source") or "pattern",
     )
 
 
