@@ -528,7 +528,7 @@ make setup
 
 docker ps | grep autopentest-tools
 # If not running:
-docker run -d --name autopentest-tools bhavsec/autopentest-tools:latest tail -f /dev/null
+docker run -d --name autopentest-tools dylshroll/autopentest-tools:latest tail -f /dev/null
 ```
 
 ### 5.3 Launch the assessment

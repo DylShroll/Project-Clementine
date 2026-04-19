@@ -2,9 +2,11 @@
 Phase 1 — Reconnaissance and asset discovery.
 
 Goals:
-  - Crawl and fingerprint the web attack surface via AutoPentest AI
+  - Load the AutoPentest engagement and register scope domains
+  - Drive Claude Code through WSTG Phase 0 (application discovery) and
+    Phase 1 (information gathering) via a subprocess call
   - Map AWS resources from response headers and cloud-audit enumeration
-  - Build the resource_graph adjacency table used by the correlation engine
+  - Ingest AutoPentest findings into Clementine's database
   - Store a target manifest in the assessment_state table
 
 All URL-targeting tool calls are scope-checked before dispatch.
@@ -17,10 +19,10 @@ import logging
 from typing import Any
 
 from ..config import ClementineConfig
-from ..db import Finding, FindingsDB, GraphRelationship, Severity
+from ..db import FindingsDB
 from ..mcp_client import MCPRegistry
-from ..sanitize import sanitize_evidence
 from ..scope import RateLimiter, ScopeGuard
+from . import _autopentest
 
 log = logging.getLogger(__name__)
 
@@ -33,47 +35,31 @@ async def run_recon(
     limiter: RateLimiter,
 ) -> None:
     """Execute Phase 1: recon and asset discovery."""
-
     target_url = cfg.target.url
-    auth_cfg = cfg.auth
 
     # ------------------------------------------------------------------
-    # 1a. Initialise an AutoPentest engagement
+    # 1a. Bootstrap the AutoPentest engagement
     # ------------------------------------------------------------------
+    eid = None
     if mcp.is_available("autopentest"):
-        log.info("[Phase 1] Initialising AutoPentest engagement for %s", target_url)
-        async with limiter:
-            scope.check_url(target_url)
-            await mcp.call_tool(
-                "autopentest",
-                "create_engagement",
-                {
-                    "target_url": target_url,
-                    "scope": {
-                        "include_domains": cfg.target.scope.include_domains,
-                        "exclude_paths": cfg.target.scope.exclude_paths,
-                    },
-                    "auth": _build_auth_payload(auth_cfg),
-                    "rate_limit_rps": cfg.target.scope.rate_limit_rps,
-                },
-            )
+        eid = await _autopentest.get_or_create_engagement_id(cfg, db)
+        log.info("[Phase 1] AutoPentest engagement: %s", eid)
+        await _autopentest.bootstrap_engagement(cfg, db, mcp, eid)
     else:
-        log.warning("[Phase 1] AutoPentest unavailable — skipping web surface discovery")
+        log.warning("[Phase 1] AutoPentest unavailable — skipping engagement bootstrap")
 
     # ------------------------------------------------------------------
-    # 1b. Web surface discovery (crawl, probe, fuzz, fingerprint)
+    # 1b. Drive WSTG Phase 0 + Phase 1 via Claude Code subprocess
     # ------------------------------------------------------------------
-    if mcp.is_available("autopentest"):
-        log.info("[Phase 1] Running information gathering (WSTG-INFO)")
-        async with limiter:
-            scope.check_url(target_url)
-            info_result = await mcp.call_tool(
-                "autopentest",
-                "run_test",
-                {"category": "WSTG-INFO", "target_url": target_url},
-            )
-        if info_result:
-            await _store_autopentest_findings(info_result, db, phase=1)
+    if eid:
+        scope.check_url(target_url)
+        prompt = _build_recon_prompt(cfg, eid)
+        log.info("[Phase 1] Running AutoPentest Phase 0/1 via Claude Code")
+        output = await _autopentest.run_claude_code(prompt, timeout=3600)
+        log.debug("[Phase 1] Claude Code output (last 400 chars): …%s", output[-400:])
+
+        inserted = await _autopentest.ingest_findings(cfg, db, eid, phase=1)
+        log.info("[Phase 1] Ingested %d findings from AutoPentest", inserted)
 
     # ------------------------------------------------------------------
     # 1c. AWS resource mapping (from response headers + cloud-audit)
@@ -119,71 +105,67 @@ async def run_recon(
         "aws_account_id": cfg.aws.account_id,
         "aws_regions": cfg.aws.regions,
         "aws_resources": aws_resources,
+        "autopentest_engagement_id": eid,
     }
     await db.set_state("target_manifest", json.dumps(manifest))
     log.info("[Phase 1] Target manifest stored (%d domains)", len(manifest["domains"]))
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Prompt construction
 # ---------------------------------------------------------------------------
 
-def _build_auth_payload(auth_cfg) -> dict:
-    """Convert the AuthConfig into the dict format AutoPentest expects.
+def _build_recon_prompt(cfg: ClementineConfig, eid: str) -> str:
+    """Prompt Claude Code to execute AutoPentest Phase 0 + Phase 1."""
+    auth = cfg.auth
+    rate = cfg.target.scope.rate_limit_rps
+    include = ", ".join(cfg.target.scope.include_domains) or "(see engagement config)"
+    exclude = ", ".join(cfg.target.scope.exclude_paths or []) or "(none)"
+    creds_hint = _format_creds_hint(auth)
 
-    Credentials are only forwarded when a non-'none' auth method is configured.
-    """
-    if auth_cfg.method == "none":
-        return {"method": "none"}
-    if auth_cfg.method == "credentials":
-        return {
-            "method": "credentials",
-            "username": auth_cfg.username,
-            "password": auth_cfg.password,
-            "login_url": auth_cfg.login_url,
-        }
-    if auth_cfg.method == "token":
-        return {"method": "token", "bearer_token": auth_cfg.bearer_token}
-    if auth_cfg.method == "cookie":
-        return {"method": "cookie", "cookie": auth_cfg.cookie}
-    return {"method": "none"}
+    return f"""You are driving an AutoPentest engagement on behalf of Project Clementine.
+
+Engagement ID: {eid}
+Target URL:    {cfg.target.url}
+Scope domains: {include}
+Excluded:      {exclude}
+Rate limit:    {rate} req/s (respect this across all tools)
+Auth:          {creds_hint}
+
+The engagement has already been created in AutoPentest — the YAML config has
+been loaded via load_engagement_config() and each in-scope domain has been
+registered via register_scope(). Do NOT call those tools again.
+
+Your task is to execute **Phase 0 (Application Discovery)** and **Phase 1
+(Information Gathering)** exactly as described in CLAUDE.md:
+
+  1. Call get_engagement_config("{eid}") to confirm scope and credentials.
+  2. Execute Phase 0 Steps 0–4: pre-flight, background Tier 1 tools, crawl,
+     directory discovery, tool ingestion, build the endpoint map.
+  3. Call phase_gate_check("{eid}", 0) — address blockers before Phase 1.
+  4. Execute Phase 1 (all MUST WSTG-INFO tests). Track every test with
+     track_test() and log any findings with log_finding().
+  5. Call phase_gate_check("{eid}", 1).
+
+STOP after Phase 1 completes — Project Clementine will orchestrate the
+remaining phases. Do NOT run Phase 2 or later.
+
+Constraints:
+  - Honour the rate limit; never exceed {rate} req/s across all tools.
+  - Stay inside the registered scope; never touch excluded paths.
+  - Use `docker exec autopentest-tools curl` for all HTTP requests.
+  - Never call generate_report() — that is Clementine's responsibility.
+
+Proceed now.
+"""
 
 
-async def _store_autopentest_findings(raw: Any, db: FindingsDB, phase: int) -> None:
-    """Normalise AutoPentest tool output into Finding records and persist them.
-
-    AutoPentest returns a list of finding dicts; we normalise each one to the
-    shared schema.  Evidence is scrubbed before storage.
-    """
-    findings_list: list[dict] = []
-    if isinstance(raw, list):
-        findings_list = raw
-    elif isinstance(raw, dict) and "findings" in raw:
-        findings_list = raw["findings"]
-    else:
-        return
-
-    for item in findings_list:
-        if not isinstance(item, dict):
-            continue
-        evidence = item.get("evidence", {})
-        finding = Finding(
-            source="autopentest",
-            phase=phase,
-            severity=Severity(item.get("severity", "INFO").upper()),
-            category=item.get("wstg_code", item.get("category", "WSTG-INFO")),
-            title=item.get("title", "Unknown"),
-            description=item.get("description", ""),
-            resource_type="url",
-            resource_id=item.get("url", item.get("resource_id")),
-            evidence_type=item.get("evidence_type", "http_exchange"),
-            # Scrub credentials from evidence before storing
-            evidence_data=sanitize_evidence(evidence) if evidence else None,
-            remediation_summary=item.get("remediation"),
-            confidence=float(item.get("confidence", 1.0)),
-            is_validated=bool(item.get("validated", False)),
-            raw_source_data=item,
-        )
-        await db.insert_finding(finding)
-
-    log.debug("[Phase %d] Stored %d AutoPentest findings", phase, len(findings_list))
+def _format_creds_hint(auth: Any) -> str:
+    if auth.method == "credentials":
+        user = auth.username or "(username in engagement config)"
+        return f"form login as {user} at {auth.login_url or '(see config)'}"
+    if auth.method == "token":
+        return "bearer token (retrieve via get_engagement_config)"
+    if auth.method == "cookie":
+        return "raw cookie header (retrieve via get_engagement_config)"
+    return "none — unauthenticated testing only"

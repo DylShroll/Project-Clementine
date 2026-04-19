@@ -90,7 +90,14 @@ class Orchestrator:
                 await self._setup_mcp_servers()
                 await self._run_phases()
         except Exception as exc:
-            await self._set_state(AssessmentState.FAILED)
+            import anyio
+            # Shield the FAILED-state write from anyio's teardown cancellation
+            # so the original exception (not CancelledError) is what surfaces.
+            with anyio.CancelScope(shield=True):
+                try:
+                    await self._set_state(AssessmentState.FAILED)
+                except Exception:
+                    log.exception("Could not persist FAILED state")
             log.exception("Assessment failed: %s", exc)
             raise
         finally:
