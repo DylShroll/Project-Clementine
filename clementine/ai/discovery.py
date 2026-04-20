@@ -212,6 +212,7 @@ async def discover_chains(
             system=system_blocks,
             user_content=prompt,
             max_tokens=16384,
+            model=cfg.critical_model,
         )
     except Exception as exc:
         log.error("AI discovery request failed: %s", exc)

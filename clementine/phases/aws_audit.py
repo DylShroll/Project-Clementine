@@ -89,11 +89,20 @@ async def _run_cloud_audit(
     region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
     all_findings: list[Finding] = []
 
+    tool_name = mcp.find_tool("cloud_audit", [
+        "GetSecurityFindings",
+        "get_security_findings",
+        "get_findings",
+    ])
+    if not tool_name:
+        log.warning("[Phase 2] cloud-audit has no GetSecurityFindings-equivalent tool — skipping")
+        return []
+
     for service in _CLOUD_AUDIT_SERVICES:
         async with limiter:
             result = await mcp.call_tool(
                 "cloud_audit",
-                "GetSecurityFindings",
+                tool_name,
                 {
                     "region": region,
                     "service": service,
@@ -414,10 +423,18 @@ async def _build_resource_graph(
     the correlation engine has something to work with even before active scanning.
     """
     region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
+    tool_name = mcp.find_tool("cloud_audit", [
+        "ListServicesInRegion",
+        "list_services_in_region",
+        "list_services",
+    ])
+    if not tool_name:
+        log.warning("[Phase 2] cloud-audit has no ListServicesInRegion tool — skipping resource graph seed")
+        return
     async with limiter:
         result = await mcp.call_tool(
             "cloud_audit",
-            "ListServicesInRegion",
+            tool_name,
             {"region": region, "aws_profile": cfg.aws.profile},
         )
 

@@ -91,6 +91,15 @@ async def _enrich_remediations(
         log.debug("[Phase 5] AWS Knowledge unavailable — skipping enrichment")
         return
 
+    tool_name = mcp.find_tool("aws_knowledge", [
+        "retrieve_agent_sops",
+        "aws___retrieve_agent_sops",
+        "aws___search_documentation",
+    ])
+    if not tool_name:
+        log.debug("[Phase 5] AWS Knowledge has no SOP/doc tool — skipping enrichment")
+        return
+
     chains = await db.get_attack_chains()
     for chain in chains:
         actions = await db.get_remediation_actions(chain_id=chain.id)
@@ -100,7 +109,7 @@ async def _enrich_remediations(
             async with limiter:
                 sop = await mcp.call_tool(
                     "aws_knowledge",
-                    "retrieve_agent_sops",
+                    tool_name,
                     {"query": action.action_summary},
                 )
             if sop:

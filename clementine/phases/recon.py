@@ -55,7 +55,12 @@ async def run_recon(
         scope.check_url(target_url)
         prompt = _build_recon_prompt(cfg, eid)
         log.info("[Phase 1] Running AutoPentest Phase 0/1 via Claude Code")
-        output = await _autopentest.run_claude_code(prompt, timeout=3600)
+        output = await _autopentest.run_claude_code(
+            prompt,
+            timeout=3600,
+            model=cfg.ai.primary_model,
+            api_key=cfg.ai.api_key or None,
+        )
         log.debug("[Phase 1] Claude Code output (last 400 chars): …%s", output[-400:])
 
         inserted = await _autopentest.ingest_findings(cfg, db, eid, phase=1)
@@ -69,32 +74,48 @@ async def run_recon(
 
     if mcp.is_available("cloud_audit"):
         region = cfg.aws.regions[0] if cfg.aws.regions else "us-east-1"
-        async with limiter:
-            svc_map = await mcp.call_tool(
-                "cloud_audit",
-                "ListServicesInRegion",
-                {"region": region, "aws_profile": cfg.aws.profile},
-            )
-        if svc_map and isinstance(svc_map, list):
-            svc_map = svc_map[0]
-        services = (svc_map or {}).get("services") if isinstance(svc_map, dict) else []
-        log.debug("[Phase 1] cloud-audit found %s AWS services in %s", len(services or []), region)
+        tool = mcp.find_tool("cloud_audit", [
+            "ListServicesInRegion",
+            "list_services_in_region",
+            "list_services",
+        ])
+        if tool:
+            async with limiter:
+                svc_map = await mcp.call_tool(
+                    "cloud_audit",
+                    tool,
+                    {"region": region, "aws_profile": cfg.aws.profile},
+                )
+            if svc_map and isinstance(svc_map, list):
+                svc_map = svc_map[0]
+            services = (svc_map or {}).get("services") if isinstance(svc_map, dict) else []
+            log.debug("[Phase 1] cloud-audit found %s AWS services in %s",
+                      len(services or []), region)
+        else:
+            log.warning("[Phase 1] cloud_audit has no list-services tool — skipping")
 
     # Discover publicly enumerable AWS resources via AWS Knowledge MCP
     if mcp.is_available("aws_knowledge"):
-        async with limiter:
-            result = await mcp.call_tool(
-                "aws_knowledge",
-                "aws___search_documentation",
-                {
-                    "search_phrase": (
-                        f"AWS services used by {target_url} "
-                        "CloudFront ALB API Gateway S3"
-                    ),
-                    "topics": ["general"],
-                },
-            )
-        log.debug("[Phase 1] AWS Knowledge search returned %s items", len(result or []))
+        tool = mcp.find_tool("aws_knowledge", [
+            "aws___search_documentation",
+            "search_documentation",
+        ])
+        if tool:
+            async with limiter:
+                result = await mcp.call_tool(
+                    "aws_knowledge",
+                    tool,
+                    {
+                        "search_phrase": (
+                            f"AWS services used by {target_url} "
+                            "CloudFront ALB API Gateway S3"
+                        ),
+                        "topics": ["general"],
+                    },
+                )
+            log.debug("[Phase 1] AWS Knowledge search returned %s items", len(result or []))
+        else:
+            log.warning("[Phase 1] aws_knowledge has no search tool — skipping")
 
     # ------------------------------------------------------------------
     # 1d. Persist the target manifest

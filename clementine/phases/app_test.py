@@ -47,7 +47,12 @@ async def run_app_test(
 
     prompt = _build_app_test_prompt(cfg, eid)
     log.info("[Phase 3] Running AutoPentest Phases 2–5 via Claude Code")
-    output = await _autopentest.run_claude_code(prompt, timeout=7200)
+    output = await _autopentest.run_claude_code(
+        prompt,
+        timeout=7200,
+        model=cfg.ai.primary_model,
+        api_key=cfg.ai.api_key or None,
+    )
     log.debug("[Phase 3] Claude Code output (last 400 chars): …%s", output[-400:])
 
     inserted = await _autopentest.ingest_findings(cfg, db, eid, phase=3)

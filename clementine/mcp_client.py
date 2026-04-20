@@ -142,6 +142,15 @@ class StdioMCPClient:
 
         return await _with_retries(_attempt, self.name)
 
+    async def list_tools(self) -> list[str]:
+        """Return the advertised tool names from this server's MCP manifest."""
+        async def _attempt():
+            session = await self._ensure_session()
+            result = await session.list_tools()
+            return [t.name for t in (result.tools or [])]
+
+        return await _with_retries(_attempt, self.name)
+
     async def ping(self) -> bool:
         """Light health check — returns True if the session is alive."""
         try:
@@ -239,6 +248,32 @@ class HttpMCPClient:
 
         return await _with_retries(_attempt, self.name)
 
+    async def list_tools(self) -> list[str]:
+        """Return advertised tool names via the JSON-RPC ``tools/list`` method."""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "params": {},
+            "id": self._next_id(),
+        }
+
+        async def _attempt():
+            response = await self._http.post(
+                self._base_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            body = response.json()
+            if "error" in body:
+                raise MCPToolError(
+                    f"[{self.name}] tools/list error: {body['error']}"
+                )
+            tools = body.get("result", {}).get("tools", []) or []
+            return [t.get("name") for t in tools if isinstance(t, dict) and t.get("name")]
+
+        return await _with_retries(_attempt, self.name)
+
     async def ping(self) -> bool:
         """Health check — HEAD request to the base URL."""
         try:
@@ -280,6 +315,10 @@ class MCPRegistry:
         self._clients: dict[str, MCPClient] = {}
         # Names of servers confirmed to be unavailable this run
         self._unavailable: set[str] = set()
+        # Maps server name → set of advertised tool names (populated by
+        # discover_tools_all()).  Phases resolve canonical tool names via
+        # find_tool() so they don't break when a server renames a tool.
+        self._tool_catalog: dict[str, set[str]] = {}
 
     def register_stdio(self, name: str, cfg: StdioServerConfig) -> None:
         """Register a stdio-transport MCP server."""
@@ -325,6 +364,53 @@ class MCPRegistry:
             if not alive:
                 log.warning("[%s] health check failed", name)
         return results
+
+    async def discover_tools_all(self) -> dict[str, list[str]]:
+        """Populate the tool catalog for every available server.
+
+        Logs each server's tool list at INFO so mismatched / renamed tools
+        are visible at orchestrator startup.  Servers whose tools/list call
+        fails are not marked unavailable (the server itself may be healthy
+        even if the manifest call transiently fails) but their catalog is
+        left empty, which causes find_tool() to return None and callers to
+        skip gracefully.
+        """
+        summary: dict[str, list[str]] = {}
+        for name, client in self._clients.items():
+            if name in self._unavailable:
+                continue
+            try:
+                tools = await client.list_tools()
+            except Exception as exc:
+                log.warning("[%s] tools/list failed: %s", name, exc)
+                self._tool_catalog[name] = set()
+                summary[name] = []
+                continue
+            self._tool_catalog[name] = set(tools)
+            summary[name] = sorted(tools)
+            log.info("[%s] advertises %d tools: %s",
+                     name, len(tools), ", ".join(sorted(tools)))
+        return summary
+
+    def find_tool(self, server: str, candidates: list[str]) -> str | None:
+        """Return the first *candidate* advertised by *server*, or None.
+
+        Phases pass a preference list (e.g. the canonical name first, then
+        fallbacks for renames) so a tool-name change in an upstream MCP
+        server doesn't silently turn a phase into a no-op — it either
+        resolves to an equivalent name or returns None for the phase to log.
+        """
+        catalog = self._tool_catalog.get(server)
+        if not catalog:
+            return None
+        for name in candidates:
+            if name in catalog:
+                return name
+        log.warning(
+            "[%s] none of %s are advertised — known tools: %s",
+            server, candidates, sorted(catalog),
+        )
+        return None
 
     def is_available(self, server: str) -> bool:
         """Return True if the server is registered and not marked unavailable."""

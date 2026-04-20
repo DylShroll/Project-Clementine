@@ -89,8 +89,9 @@ orchestrator:
 ai:
   enabled: true
   api_key: "${ANTHROPIC_API_KEY}"
-  model: "claude-opus-4-7"
-  effort: "high"                  # low | medium | high | xhigh | max
+  primary_model: "claude-sonnet-4-6"   # Heavy phases: recon, app-test, triage
+  critical_model: "claude-opus-4-7"    # Reserved for Phase 4 chain discovery
+  effort: "high"                       # Opus-only: low | medium | high | xhigh | max
   max_parallel_requests: 4        # Parallel Anthropic calls across AI phases
   max_retries: 3                  # Transient-error retry budget (rate limits, 5xx)
 

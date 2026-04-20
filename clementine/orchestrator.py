@@ -203,6 +203,11 @@ class Orchestrator:
                 # Mark as unavailable so phases skip tool calls on dead servers
                 self._mcp._unavailable.add(name)
 
+        # Discover each server's tool manifest so phases can resolve tool
+        # names dynamically via MCPRegistry.find_tool() — protects against
+        # upstream MCP renames and surfaces mismatches at startup.
+        await self._mcp.discover_tools_all()
+
     # ------------------------------------------------------------------
     # State helpers
     # ------------------------------------------------------------------

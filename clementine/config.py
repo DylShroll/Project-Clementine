@@ -246,11 +246,15 @@ class AIConfig(BaseModel):
     enabled: bool = True
     # Resolved from ${ANTHROPIC_API_KEY} in the YAML; empty means "disabled".
     api_key: Optional[str] = None
-    # Default model — Opus 4.7 with adaptive thinking. Override only if a
-    # tenant has a strong reason (e.g. pinning a cheaper model for triage).
-    model: str = "claude-opus-4-7"
-    # Effort controls overall token spend AND thinking depth on Opus 4.7.
-    # 'high' is the sweet spot for intelligence-sensitive security analysis.
+    # Primary model — drives the heavy phases (recon, app-test, triage).
+    # Sonnet by default; it handles 95% of WSTG execution well at a fraction
+    # of Opus cost. Tune via YAML only if a tenant has a strong reason.
+    primary_model: str = "claude-sonnet-4-6"
+    # Critical model — reserved for the hardest reasoning step (novel
+    # attack-chain discovery). Opus earns its cost here because the chain
+    # synthesis is where subtle cross-domain correlations are found.
+    critical_model: str = "claude-opus-4-7"
+    # Effort controls thinking depth on Opus 4.x. Sonnet ignores it.
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # How many parallel Anthropic requests may be in flight at once. Kept
     # conservative so a large assessment doesn't exhaust rate limits.

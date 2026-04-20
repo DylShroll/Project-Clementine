@@ -85,6 +85,7 @@ class ClaudeClient:
         system: list[dict] | str,
         user_content: list[dict] | str,
         max_tokens: int = 8192,
+        model: Optional[str] = None,
     ) -> T:
         """Send a structured-output request and return the parsed Pydantic model.
 
@@ -93,21 +94,36 @@ class ClaudeClient:
 
         The system prompt is sent as a list of content blocks so callers can
         mark stable prefixes with ``cache_control`` for prompt-cache hits.
+
+        Pass ``model`` to override the default primary model (used by
+        discovery for the Opus critical path).
         """
-        params = {
-            "model": self._cfg.model,
+        chosen_model = model or self._cfg.primary_model
+        params: dict = {
+            "model": chosen_model,
             "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": user_content}],
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": self._cfg.effort},
-            "response_model": response_model,
+            "output_format": response_model,
         }
+        # Adaptive thinking + effort are Opus 4.x features; Sonnet rejects them.
+        if "opus" in chosen_model.lower():
+            params["thinking"] = {"type": "adaptive"}
+            params["output_config"] = {"effort": self._cfg.effort}
 
         async with self._semaphore:
-            return await self._with_retries(
+            result = await self._with_retries(
                 lambda: self._client.messages.parse(**params)
             )
+        # messages.parse() returns a ParsedMessage; parsed_output holds the
+        # validated Pydantic instance (or None if the model refused / failed
+        # to conform to the schema).
+        parsed = getattr(result, "parsed_output", None)
+        if parsed is None:
+            raise RuntimeError(
+                f"Claude returned no parsed output for {response_model.__name__}"
+            )
+        return parsed
 
     # ------------------------------------------------------------------
     # Retry loop
