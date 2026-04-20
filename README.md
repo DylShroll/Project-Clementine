@@ -489,3 +489,5 @@ clementine run --config clementine.yaml
 - IaC scanning (Terraform, CloudFormation, CDK)
 - Additional correlation patterns based on emerging exploit paths
 - Increase backoff time on `clementine.mcp_client` failures during rate-limit errors
+- Decrease costs/scan.
+- Increase llm tracability/visibility
