@@ -452,3 +452,4 @@ clementine run --config clementine.yaml
 - Azure, GCP integrations
 - IaC Scanning
 - additional correlation patterns based on common exploit paths
+- increase sleep time on clementine.mcp_client failures during rate limit errors
