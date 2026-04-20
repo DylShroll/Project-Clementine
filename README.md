@@ -71,7 +71,7 @@ clementine --version
 docker pull bhavsec/autopentest-tools:latest
 
 # Start the container (keep it running in the background)
-docker run -d --name autopentest-tools bhavsec/autopentest-tools:latest tail -f /dev/null
+docker run -d --name autopentest-tools dylshroll/autopentest-tools:latest tail -f /dev/null
 ```
 
 ### Install the Node.js MCP server
