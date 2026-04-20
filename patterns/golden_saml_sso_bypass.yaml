@@ -1,0 +1,80 @@
+# Pattern: SAML IdP trust misconfiguration → forged SAML assertion → IAM role assumption without MFA
+#
+# AWS IAM SAML providers that do not enforce audience restriction, that accept
+# tokens signed by any certificate the IdP trusts, or where the assumable role
+# has no Condition on the saml:sub or saml:aud attributes can be abused by
+# an attacker with access to the IdP signing key (a "GoldenSAML" attack).
+# A forged SAML assertion passes AWS STS validation and produces valid temporary
+# credentials for the associated role — including admin roles — bypassing MFA
+# entirely because SAML federations are exempt from MFA Conditions in IAM policy.
+#
+# MITRE ATT&CK: T1606.002 (Forge Web Credentials: SAML Tokens),
+# T1548.005 (Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access),
+# T1556.006 (Modify Authentication Process: Multi-Factor Authentication)
+
+pattern:
+  name: "GoldenSAML: forged SAML assertion to admin IAM role"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: iam-saml-provider-trust-too-permissive
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-role-no-mfa-condition
+    relationship: same_account
+
+impact: >
+  An IAM SAML provider with an overly permissive trust policy (missing saml:aud,
+  saml:iss, or saml:sub attribute Conditions) accepts forged SAML responses.
+  An attacker who has compromised the IdP's ADFS or Okta signing certificate can
+  construct a SAML assertion for any attribute value, including elevated group
+  memberships.  AWS STS AssumeRoleWithSAML validates the assertion signature but
+  not business-logic attributes unless explicit IAM Conditions are present.
+  Because the assumable role carries no MFA Condition (SAML federations bypass
+  IAM MFA requirements), the attacker receives temporary credentials for an
+  overprivileged AWS role — full account access — without triggering any MFA
+  challenge.  This attack is entirely credential-based and leaves no interactive
+  sign-in events in IdP logs.
+
+remediation_priority:
+  - summary: "Add saml:aud and saml:sub Conditions to the IAM role trust policy to reject assertions not explicitly targeting that role"
+    effort: MEDIUM
+    breaks_chain: true
+    iac_snippet: |
+      {
+        "Condition": {
+          "StringEquals": {
+            "saml:aud": "https://signin.aws.amazon.com/saml",
+            "saml:iss": "https://sts.windows.net/<TENANT_ID>/"
+          },
+          "StringLike": {
+            "saml:sub": "admins@example.com"
+          }
+        }
+      }
+
+  - summary: "Rotate the IdP signing certificate immediately if compromise is suspected — revoke old certificate in AWS IAM SAML provider"
+    effort: HIGH
+    breaks_chain: false
+    cli_command: |
+      aws iam update-saml-provider \
+        --saml-provider-arn <PROVIDER_ARN> \
+        --saml-metadata-document file://updated-metadata.xml
+
+  - summary: "Apply least-privilege to all SAML-assumable IAM roles — audit for AdministratorAccess and wildcard resource policies"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable AWS CloudTrail and alert on AssumeRoleWithSAML events from unexpected source IPs or outside business hours"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws cloudtrail put-event-selectors \
+        --trail-name <TRAIL_NAME> \
+        --event-selectors '[{"ReadWriteType":"All","IncludeManagementEvents":true}]'

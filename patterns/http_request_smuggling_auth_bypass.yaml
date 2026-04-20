@@ -1,0 +1,84 @@
+# Pattern: HTTP request smuggling at ALB/reverse proxy → internal endpoint access → auth bypass
+#
+# HTTP/1.1 request smuggling (CL.TE or TE.CL desynchronisation) at an AWS
+# Application Load Balancer or reverse proxy that forwards to a backend server
+# allows an attacker to prepend a partial HTTP request that is treated as the
+# start of the next legitimate user's request.  Internal or admin endpoints
+# that rely on the network boundary for authentication — trusting that only
+# the load balancer can reach them — become accessible.  ALB access logging
+# is frequently disabled, leaving the attack invisible to defenders.
+#
+# MITRE ATT&CK: T1190 (Exploit Public-Facing Application),
+# T1548.002 (Abuse Elevation Control Mechanism: Bypass User Account Control — analogue:
+# bypassing app-layer auth controls via transport-layer desync),
+# T1562.008 (Impair Defenses: Disable Cloud Logs)
+
+pattern:
+  name: "HTTP request smuggling to internal endpoint auth bypass"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: request-smuggling
+  wstg: WSTG-INPV-15
+
+pivot:
+  - type: infra_finding
+    check: alb-access-logging-disabled
+    relationship: same_compute_resource
+
+  - type: app_finding
+    category: authentication-bypass
+    relationship: same_compute_resource
+
+impact: >
+  The application's reverse proxy and backend disagree on where one HTTP request
+  ends and the next begins (CL.TE or TE.CL desynchronisation).  An attacker sends
+  a crafted request that causes the backend to treat the attacker-controlled body
+  as the start of a subsequent request from a different user.  Because the
+  smuggled prefix reaches the backend directly — bypassing ALB listener rules and
+  WAF conditions that only inspect the outer request — the attacker can target
+  admin endpoints, health check APIs, or internal management surfaces that rely
+  on network-layer trust ("only the LB can reach /admin").  ALB access logging
+  being disabled means neither the smuggled request nor the attacker's IP appears
+  in any access log; the attack is entirely invisible to defenders reviewing
+  application or infrastructure logs.  Exploitation yields admin-level access,
+  session token theft from victim requests, or internal API reconnaissance.
+
+remediation_priority:
+  - summary: "Enable ALB desync mitigation mode (Strictest) to reject malformed Transfer-Encoding headers at the load balancer"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws elbv2 modify-load-balancer-attributes \
+        --load-balancer-arn <ALB_ARN> \
+        --attributes Key=routing.http.desync_mitigation_mode,Value=strictest
+    iac_snippet: |
+      resource "aws_lb" "main" {
+        desync_mitigation_mode = "strictest"
+      }
+
+  - summary: "Enable ALB access logging to S3 to ensure all request telemetry is captured for incident response"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws elbv2 modify-load-balancer-attributes \
+        --load-balancer-arn <ALB_ARN> \
+        --attributes Key=access_logs.s3.enabled,Value=true \
+          Key=access_logs.s3.bucket,Value=<LOG_BUCKET>
+
+  - summary: "Enforce HTTP/2 end-to-end — upgrade backend connections from HTTP/1.1 to eliminate CL.TE ambiguity at the connection layer"
+    effort: HIGH
+    breaks_chain: false
+
+  - summary: "Implement explicit authentication checks on internal/admin endpoints — do not rely solely on network boundary enforcement"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Deploy WAF with rate limiting and anomaly detection on all ALB-backed APIs to surface smuggling probes"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws wafv2 associate-web-acl \
+        --web-acl-arn <WAF_ACL_ARN> \
+        --resource-arn <ALB_ARN>

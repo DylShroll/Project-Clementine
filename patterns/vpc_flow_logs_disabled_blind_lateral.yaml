@@ -1,0 +1,89 @@
+# Pattern: VPC flow logs disabled + permissive security group + high-severity finding
+#          → blind lateral movement across subnet boundaries
+#
+# VPC flow logs record accepted and rejected network connections at the ENI
+# level — they are the primary forensic and detection data source for lateral
+# movement within AWS.  When flow logs are disabled and security groups permit
+# unrestricted inbound traffic between subnets, an attacker who compromises any
+# host in the VPC can scan and pivot to adjacent services (databases, internal
+# APIs, admin consoles) with zero network-layer detection.  The attacker's
+# entire lateral movement path leaves no evidence in any AWS log.
+#
+# MITRE ATT&CK: T1562.008 (Impair Defenses: Disable Cloud Logs),
+# T1210 (Exploitation of Remote Services),
+# T1046 (Network Service Discovery)
+
+pattern:
+  name: "VPC flow logs disabled — blind lateral movement via permissive security groups"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: vpc-flow-logs-disabled
+
+pivot:
+  - type: infra_finding
+    check: security-group-allows-all-inbound
+    relationship: same_account
+
+  - type: any_finding
+    severity: ["HIGH", "CRITICAL"]
+    relationship: same_account
+
+impact: >
+  VPC flow logs are the sole record of accepted and rejected network flows at
+  the Elastic Network Interface level.  With flow logs disabled, no AWS-native
+  mechanism records which hosts connected to which services, when, or how much
+  data was transferred.  Security groups that permit unrestricted inbound traffic
+  (0.0.0.0/0 or ::/0 on all ports) between VPC subnets eliminate network
+  segmentation as a defence entirely.  An attacker who achieves initial access
+  to any host — via the correlated high-severity finding — can perform ICMP
+  sweeps, port scans, and connection attempts across the entire VPC CIDR range
+  without generating a single log entry.  Internal RDS endpoints, ElastiCache
+  clusters, Elasticsearch nodes, and admin HTTP APIs become reachable and
+  exploitable with no audit trail.  Incident responders faced with a breach will
+  have no timeline of attacker movement and cannot determine blast radius.
+
+remediation_priority:
+  - summary: "Enable VPC flow logs for all VPCs to S3 or CloudWatch Logs — ALL traffic, not just rejected"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws ec2 create-flow-logs \
+        --resource-type VPC \
+        --resource-ids <VPC_ID> \
+        --traffic-type ALL \
+        --log-destination-type s3 \
+        --log-destination <S3_BUCKET_ARN>
+    iac_snippet: |
+      resource "aws_flow_log" "main" {
+        vpc_id          = aws_vpc.main.id
+        traffic_type    = "ALL"
+        iam_role_arn    = aws_iam_role.flow_log.arn
+        log_destination = aws_cloudwatch_log_group.flow_log.arn
+      }
+
+  - summary: "Replace 0.0.0.0/0 security group rules with least-privilege rules — specify exact source security group IDs or CIDRs for each port"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      # Remove overly permissive rule and replace with scoped rule
+      aws ec2 revoke-security-group-ingress \
+        --group-id <SG_ID> \
+        --protocol all \
+        --cidr 0.0.0.0/0
+      aws ec2 authorize-security-group-ingress \
+        --group-id <SG_ID> \
+        --protocol tcp \
+        --port 443 \
+        --source-group <ALLOWED_SG_ID>
+
+  - summary: "Resolve the correlated high/critical finding to eliminate the initial access vector that makes lateral movement possible"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable GuardDuty to detect anomalous network behaviour and credential use that flow logs alone cannot correlate"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws guardduty create-detector --enable --finding-publishing-frequency ONE_HOUR

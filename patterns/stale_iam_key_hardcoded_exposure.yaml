@@ -1,0 +1,86 @@
+# Pattern: Hardcoded IAM access key in source code + key never rotated + overprivileged IAM user
+#
+# IAM access keys found in source code, commit history, CI/CD logs, or
+# documentation represent one of the most commonly exploited initial access
+# vectors in cloud breaches.  When the key is long-lived (no rotation policy)
+# and the associated IAM user has broad permissions, a single leaked file
+# grants persistent, authenticated AWS API access.  Unlike temporary credentials
+# stolen from IMDS, long-lived access keys survive instance termination,
+# credential rotation events, and infrastructure redeployment — they remain
+# valid until explicitly deleted or deactivated.
+#
+# MITRE ATT&CK: T1552.001 (Unsecured Credentials: Credentials In Files),
+# T1078.004 (Valid Accounts: Cloud Accounts),
+# T1098.001 (Account Manipulation: Additional Cloud Credentials)
+
+pattern:
+  name: "Hardcoded long-lived IAM key to persistent account access"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: hardcoded-credential
+  wstg: WSTG-CONF-07
+
+pivot:
+  - type: infra_finding
+    check: iam-access-key-not-rotated
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-user-overprivileged
+    relationship: same_account
+
+impact: >
+  An IAM access key embedded in source code, commit history, or application
+  configuration is accessible to anyone with repository read access — including
+  former employees, open-source contributors, or an attacker who achieves any
+  level of code read access.  The key has never been rotated (age exceeds
+  90 days), indicating it has been in use long enough to be replicated across
+  developer laptops, CI/CD environment variables, and third-party integrations.
+  The associated IAM user holds broad permissions (AdministratorAccess or
+  equivalent wildcard policies).  An attacker using the key can enumerate the
+  entire AWS environment, exfiltrate data from S3 and RDS, create additional
+  IAM users or access keys for persistent backdoor access, launch cryptocurrency
+  mining EC2 fleets, or destroy infrastructure — all with no interactive sign-in
+  event that would trigger MFA challenges.
+
+remediation_priority:
+  - summary: "Immediately deactivate and delete the exposed IAM access key — treat all activity since the commit date as potentially compromised"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Deactivate first, then delete after confirming no legitimate usage
+      aws iam update-access-key \
+        --access-key-id <KEY_ID> \
+        --status Inactive \
+        --user-name <IAM_USER>
+      aws iam delete-access-key \
+        --access-key-id <KEY_ID> \
+        --user-name <IAM_USER>
+
+  - summary: "Purge the key from git history using git-filter-repo and rotate all secrets that may have been co-located with it"
+    effort: HIGH
+    breaks_chain: false
+    cli_command: |
+      # Remove secret from all commits
+      git filter-repo --path <FILE_WITH_SECRET> --invert-paths
+
+  - summary: "Enforce IAM access key rotation at 90-day maximum via AWS Config rule access-keys-rotated"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws configservice put-config-rule \
+        --config-rule file://access-keys-rotated-rule.json
+
+  - summary: "Migrate from long-lived IAM user access keys to IAM roles with short-lived credentials for all CI/CD and application workloads"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Apply least-privilege to the IAM user — remove AdministratorAccess and replace with a scoped policy covering only required actions and resources"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable git-secrets or similar pre-commit scanning to prevent future credential commits; add GitHub secret scanning to the repository"
+    effort: LOW
+    breaks_chain: false

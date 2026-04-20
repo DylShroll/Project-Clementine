@@ -1,0 +1,82 @@
+# Pattern: Unauthenticated API Gateway endpoint → Lambda execution → RDS data exfiltration
+#
+# API Gateway REST or HTTP APIs with no authorizer (no Cognito, IAM, or Lambda
+# authorizer) expose underlying Lambda functions to the public internet.  When
+# the Lambda execution role has access to an RDS instance that is not isolated
+# inside a private VPC subnet (or the Lambda itself is not VPC-bound), an
+# unauthenticated caller can trigger database queries, extract data, or trigger
+# downstream side effects with no credential required.
+#
+# MITRE ATT&CK: T1190 (Exploit Public-Facing Application),
+# T1059.009 (Command and Scripting Interpreter: Cloud API),
+# T1530 (Data from Cloud Storage Object)
+
+pattern:
+  name: "Unauthenticated API Gateway to RDS data exfiltration"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: apigateway-endpoint-no-authorization
+
+pivot:
+  - type: infra_finding
+    check: lambda-no-vpc-configuration
+    relationship: same_account
+
+  - type: infra_finding
+    check: rds-instance-publicly-accessible
+    relationship: same_account
+
+impact: >
+  The API Gateway endpoint carries no authorizer — any HTTP client can invoke
+  the backing Lambda function without credentials.  The Lambda is not confined
+  to a VPC, meaning it routes to the internet and can reach the RDS instance
+  via its public endpoint.  An attacker probing the API can discover available
+  routes through the response shape, error messages, or GraphQL/OpenAPI schemas
+  exposed at well-known paths.  By crafting requests that exercise database-
+  backed handlers — list, search, export endpoints — the attacker can enumerate
+  and extract data without authentication.  If the Lambda execution role also
+  holds secretsmanager:GetSecretValue or ssm:GetParameter, the attacker can
+  trigger additional secret retrieval from within the function's execution
+  context by abusing exposed invocation parameters.
+
+remediation_priority:
+  - summary: "Add an API Gateway authorizer (Cognito User Pool, IAM, or Lambda token authorizer) to all production endpoints"
+    effort: MEDIUM
+    breaks_chain: true
+    iac_snippet: |
+      resource "aws_api_gateway_authorizer" "cognito" {
+        name          = "cognito-authorizer"
+        rest_api_id   = aws_api_gateway_rest_api.main.id
+        type          = "COGNITO_USER_POOLS"
+        provider_arns = [aws_cognito_user_pool.main.arn]
+      }
+
+  - summary: "Deploy Lambda functions inside a VPC with private subnets and security groups — remove public RDS endpoint"
+    effort: MEDIUM
+    breaks_chain: false
+    iac_snippet: |
+      resource "aws_lambda_function" "api_handler" {
+        vpc_config {
+          subnet_ids         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+          security_group_ids = [aws_security_group.lambda_sg.id]
+        }
+      }
+
+  - summary: "Disable public accessibility on RDS instances and restrict security group inbound to Lambda security group only"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws rds modify-db-instance \
+        --db-instance-identifier <DB_ID> \
+        --no-publicly-accessible \
+        --apply-immediately
+
+  - summary: "Enable API Gateway access logging and WAF to detect enumeration and abuse patterns"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws wafv2 associate-web-acl \
+        --web-acl-arn <WAF_ARN> \
+        --resource-arn <API_STAGE_ARN>

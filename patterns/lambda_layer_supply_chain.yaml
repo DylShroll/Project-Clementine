@@ -1,0 +1,81 @@
+# Pattern: Lambda function consuming public/shared layer → poisoned code execution → credential theft
+#
+# AWS Lambda layers can be published publicly or shared across accounts.
+# A Lambda function pinned to a public layer ARN controlled by a third party
+# (or referencing a layer version that has been abandoned and re-claimed by a
+# malicious actor) will execute arbitrary code in the function's runtime context
+# on every invocation.  If the Lambda execution role is overprivileged and
+# environment variables contain additional secrets, the attacker exfiltrates
+# both the IAM credentials and application secrets silently.
+#
+# MITRE ATT&CK: T1195.002 (Supply Chain Compromise: Compromise Software Supply Chain),
+# T1552.001 (Unsecured Credentials: Credentials In Files),
+# T1078.004 (Valid Accounts: Cloud Accounts)
+
+pattern:
+  name: "Lambda public layer supply chain to credential exfiltration"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: lambda-uses-public-layer-arn
+
+pivot:
+  - type: infra_finding
+    check: lambda-execution-role-overprivileged
+    relationship: same_account
+
+  - type: infra_finding
+    check: lambda-environment-secrets-unencrypted
+    relationship: same_account
+
+impact: >
+  The Lambda function references a layer by ARN published to a public AWS account.
+  If the layer publisher account is compromised, abandoned, or the layer version
+  is deleted and re-published by a different actor, every subsequent cold-start
+  or forced re-invocation of the function executes the attacker-controlled layer
+  code inside the Lambda execution environment.  The layer runs with the same
+  permissions as the function itself.  With an overprivileged execution role the
+  attacker's code calls the Lambda runtime API to read all environment variables
+  (including application secrets stored as env vars), then exfiltrates those
+  secrets and the function's temporary AWS credentials via HTTPS to an attacker-
+  controlled endpoint.  This supply chain attack affects every invocation until
+  the layer is unpinned, and generates no application-layer errors that would
+  alert on-call engineers.
+
+remediation_priority:
+  - summary: "Pin Lambda layers to internally published layer versions in your own account — never reference public third-party layer ARNs in production"
+    effort: MEDIUM
+    breaks_chain: true
+    iac_snippet: |
+      resource "aws_lambda_function" "api" {
+        # Use internally published layer — not public account ARN
+        layers = [
+          "arn:aws:lambda:<REGION>:<YOUR_ACCOUNT>:layer:<LAYER_NAME>:<VERSION>"
+        ]
+      }
+
+  - summary: "Migrate all Lambda secrets from environment variables to Secrets Manager — remove plaintext env var credentials"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      aws secretsmanager create-secret \
+        --name lambda/<FUNCTION>/secret \
+        --secret-string '{"key":"value"}'
+      # Update function to fetch via boto3 at runtime
+
+  - summary: "Apply least-privilege to Lambda execution roles — restrict to the exact services and resource ARNs the function needs"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable Lambda code signing to reject function packages and layers that are not signed by your organisation's signing profile"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      aws lambda put-function-code-signing-config \
+        --function-name <FUNCTION_NAME> \
+        --code-signing-config-arn <SIGNING_CONFIG_ARN>
+
+  - summary: "Implement egress filtering on Lambda VPC configuration to block unexpected outbound HTTPS connections to unknown destinations"
+    effort: HIGH
+    breaks_chain: false
