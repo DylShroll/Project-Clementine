@@ -8,7 +8,7 @@ SSRF (medium)  +  IMDSv1 enabled  +  overprivileged IAM role  =  full account ta
 
 ---
 
-## What it does
+## What it does (right now)
 
 Project Clementine runs five sequential phases:
 
@@ -151,6 +151,7 @@ clementine run --config clementine.yaml
 ```
 
 Reports are written to `./reports/` by default:
+
 - `reports/report.html` — interactive HTML with severity filtering
 - `reports/report.json` — machine-readable JSON
 - `reports/report.sarif` — for IDE and CI/CD consumption
@@ -443,3 +444,11 @@ To force a full restart, delete the findings database:
 rm findings.db
 clementine run --config clementine.yaml
 ```
+
+## Things I want to do with the project
+
+- Knowledge-graph w/ embeddings model for better attack surface cognition and novel exploit chain development
+- GUI?
+- Azure, GCP integrations
+- IaC Scanning
+- additional correlation patterns based on common exploit paths
