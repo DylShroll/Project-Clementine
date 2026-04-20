@@ -57,6 +57,15 @@ _DASHED_EDGES: frozenset[str] = frozenset({
     AWSEdgeType.INTERNET_FACING.value,
 })
 
+_SEV_RADIUS: dict[str | None, int] = {
+    "CRITICAL": 14,
+    "HIGH":     12,
+    "MEDIUM":   10,
+    "LOW":       9,
+    "INFO":      8,
+    None:        8,
+}
+
 _SEV_COLORS: dict[str | None, str] = {
     "CRITICAL": "#dc2626",
     "HIGH":     "#ea580c",
@@ -240,6 +249,7 @@ class AttackSurfaceAnalyzer:
                     "internet_facing": bool(data.get("is_internet_facing")),
                     "color": _NODE_COLORS.get(node_type, "#94a3b8"),
                     "border_color": _SEV_COLORS.get(severity, "#94a3b8"),
+                    "radius": _SEV_RADIUS.get(severity, 8),
                 }
             })
 

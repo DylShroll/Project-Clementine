@@ -221,9 +221,29 @@ pre.code{background:var(--c-code-bg);color:var(--c-code-text);padding:.875rem 1r
 .comp-table td{padding:.55rem .875rem;border-bottom:1px solid #f1f5f9}
 
 /* ── Attack Graph ── */
-.graph-canvas-wrap{background:#0f172a;border-radius:.5rem;overflow:hidden;position:relative}
-#cy-canvas{display:block;width:100%;height:520px;cursor:grab}
+.graph-canvas-wrap{background:#0f172a;border-radius:.5rem;overflow:hidden;position:relative;height:580px}
+#cy-canvas{display:block;width:100%;height:100%;cursor:grab}
 #cy-canvas:active{cursor:grabbing}
+#cy-tip{position:absolute;display:none;pointer-events:none;background:#1e293b;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:8px 11px;font-size:.78rem;color:#f8fafc;max-width:240px;box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:20;line-height:1.45}
+#cy-tip .tip-type{font-size:.68rem;color:rgba(255,255,255,.4);margin-top:3px}
+#cy-panel{position:absolute;right:0;top:0;bottom:0;width:260px;background:#1e293b;border-left:1px solid rgba(255,255,255,.08);overflow-y:auto;transform:translateX(100%);transition:transform .18s ease;z-index:10}
+#cy-panel.open{transform:translateX(0)}
+.cy-panel-head{padding:12px 14px 10px;border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:flex-start;gap:8px}
+.cy-panel-close{margin-left:auto;cursor:pointer;color:rgba(255,255,255,.3);font-size:1.1rem;padding:0 2px;flex-shrink:0;line-height:1}
+.cy-panel-close:hover{color:#f8fafc}
+.cy-panel-body{padding:12px 14px}
+.cy-p-type{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:4px}
+.cy-p-label{font-size:.8rem;font-weight:700;color:#f8fafc;line-height:1.4;word-break:break-all;margin-bottom:8px}
+.cy-p-sec-title{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:5px;margin-top:10px}
+.cy-p-arn{font-family:monospace;font-size:.72rem;color:#94a3b8;word-break:break-all;line-height:1.5}
+.cy-p-nbr{font-size:.75rem;color:#94a3b8;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:5px}
+.cy-p-nbr:last-child{border-bottom:none}
+.cy-ndot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.cy-zoom-ctrls{position:absolute;top:10px;right:10px;display:flex;flex-direction:column;gap:4px;z-index:5}
+.cy-btn{padding:3px 8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#94a3b8;border-radius:4px;font-size:.75rem;cursor:pointer;transition:background .12s,color .12s}
+.cy-btn:hover{background:rgba(255,255,255,.12);color:#f8fafc}
+.graph-link{display:inline-block;margin-top:.625rem;font-size:.8125rem;color:#60a5fa}
+.graph-link:hover{color:#93c5fd}
 .graph-legend{display:flex;flex-wrap:wrap;gap:.5rem 1rem;margin-top:.875rem;font-size:.75rem;color:var(--c-muted)}
 .legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.35rem;vertical-align:middle}
 .legend-line{display:inline-block;width:18px;height:2px;margin-right:.35rem;vertical-align:middle}
@@ -600,12 +620,39 @@ pre.code{background:var(--c-code-bg);color:var(--c-code-text);padding:.875rem 1r
   <div class="section-title">Attack Graph</div>
   <div class="card card-pad">
     <div style="font-size:.8125rem;color:var(--c-muted);margin-bottom:.875rem">
-      Multi-hop attack surface — nodes represent AWS resources and principals; edges represent permissions, trust relationships, and exploit paths.
-      Drag to pan. Nodes settle after the force simulation converges.
+      Multi-hop attack surface &mdash; nodes represent AWS resources and principals; edges represent permissions, trust relationships, and exploit paths.
+      Hover to highlight connections. Click a node for details. Scroll to zoom. Drag to pan.
     </div>
     <div class="graph-canvas-wrap">
       <canvas id="cy-canvas"></canvas>
+      <div id="cy-tip"></div>
+      <div class="cy-zoom-ctrls">
+        <button class="cy-btn" onclick="_gZoomBy(1.25)">+</button>
+        <button class="cy-btn" onclick="_gZoomBy(0.8)">&minus;</button>
+        <button class="cy-btn" onclick="_gZoomFit()" style="font-size:.68rem">Fit</button>
+      </div>
+      <div id="cy-panel">
+        <div class="cy-panel-head">
+          <div>
+            <div class="cy-p-type" id="cy-p-type"></div>
+            <div class="cy-p-label" id="cy-p-label"></div>
+            <div id="cy-p-badges"></div>
+          </div>
+          <span class="cy-panel-close" onclick="_gClosePanel()">&#x2715;</span>
+        </div>
+        <div class="cy-panel-body">
+          <div class="cy-p-sec-title">Resource ID</div>
+          <div class="cy-p-arn" id="cy-p-arn"></div>
+          <div id="cy-p-nbr-wrap">
+            <div class="cy-p-sec-title">Connected nodes</div>
+            <div id="cy-p-neighbors"></div>
+          </div>
+        </div>
+      </div>
     </div>
+    {% if graph_path %}
+    <a class="graph-link" href="{{ graph_path }}">Open full graph &#x2192;</a>
+    {% endif %}
     <div class="graph-legend">
       <span><span class="legend-dot" style="background:#7c3aed"></span>IAM / Principal</span>
       <span><span class="legend-dot" style="background:#2563eb"></span>Compute (EC2 / EKS)</span>
@@ -675,128 +722,340 @@ function copyPre(btn) {
 // ── Attack Graph renderer ──
 {% if graph_json != '{}' %}
 (function() {
-  const _gdata = {{ graph_json | safe }};
-  const _gnodes = (_gdata.elements.nodes || []).map(function(n) {
-    return Object.assign({}, n.data, {vx:0, vy:0, x:0, y:0, pinned:false});
+  var _gdata   = {{ graph_json | safe }};
+  var _gnodes  = (_gdata.elements.nodes || []).map(function(n) {
+    return Object.assign({}, n.data, {vx:0, vy:0, x:0, y:0});
   });
-  const _gedges = (_gdata.elements.edges || []).map(function(e) { return e.data; });
-  const _gmap = {};
+  var _gedges  = (_gdata.elements.edges || []).map(function(e) { return e.data; });
+  var _gmap    = {};
   _gnodes.forEach(function(n) { _gmap[n.id] = n; });
 
-  const _canvas = document.getElementById('cy-canvas');
+  var _canvas = document.getElementById('cy-canvas');
   if (!_canvas || !_gnodes.length) return;
-  const _ctx = _canvas.getContext('2d');
+  var _ctx    = _canvas.getContext('2d');
+  var _tip    = document.getElementById('cy-tip');
+  var _panel  = document.getElementById('cy-panel');
 
-  function _sz() {
-    _canvas.width = _canvas.offsetWidth;
-    _canvas.height = _canvas.offsetHeight;
+  function _gResize() {
+    _canvas.width  = _canvas.offsetWidth  || 900;
+    _canvas.height = _canvas.offsetHeight || 580;
   }
-  _sz();
-  window.addEventListener('resize', function() { _sz(); _initPos(); });
 
-  function _initPos() {
-    const W = _canvas.width, H = _canvas.height, total = _gnodes.length;
+  // Cluster anchors: type → [x_fraction, y_fraction]
+  var _CLUSTER = {
+    iam_role:           [0.12, 0.40],
+    iam_user:           [0.12, 0.62],
+    eks_service_account:[0.18, 0.28],
+    ec2_instance:       [0.40, 0.30],
+    eks_node:           [0.48, 0.22],
+    eks_pod:            [0.55, 0.28],
+    lambda_function:    [0.70, 0.22],
+    s3_bucket:          [0.76, 0.68],
+    rds_instance:       [0.55, 0.72],
+    secrets_manager:    [0.88, 0.42],
+    ssm_parameter:      [0.88, 0.60],
+    vpc:                [0.25, 0.18],
+    security_group:     [0.35, 0.14],
+    vpc_endpoint:       [0.22, 0.52],
+    web_endpoint:       [0.44, 0.68],
+    imds:               [0.58, 0.50],
+  };
+
+  var _REP_K = 220, _SPRING_K = 110, _DAMP = 0.80;
+  var _gzoom = 1, _gpanX = 0, _gpanY = 0;
+  var _gtick = 0;
+  var _gHovNode = null, _gSelNode = null;
+  var _gDragging = false, _glmx = 0, _glmy = 0;
+
+  function _gInitPos() {
+    var W = _canvas.width, H = _canvas.height;
+    var cols = Math.ceil(Math.sqrt(_gnodes.length * (W / H)));
+    var cw = W / (cols + 1), ch = H / (Math.ceil(_gnodes.length / cols) + 1);
     _gnodes.forEach(function(n, i) {
-      const angle = 2 * Math.PI * i / Math.max(total, 1);
-      const r = Math.min(W, H) * 0.32;
-      n.x = W / 2 + r * Math.cos(angle);
-      n.y = H / 2 + r * Math.sin(angle);
+      var col = i % cols, row = Math.floor(i / cols);
+      n.x  = (col + 1) * cw + (Math.random() - .5) * cw * .5;
+      n.y  = (row + 1) * ch + (Math.random() - .5) * ch * .5;
       n.vx = 0; n.vy = 0;
     });
-    _tick = 0;
+    _gtick = 0;
   }
-  _initPos();
 
-  const _K = 90, _DAMP = 0.82;
-  let _tick = 0;
-
-  function _simulate() {
-    if (_tick > 400) return;
-    _tick++;
-    const W = _canvas.width, H = _canvas.height;
-    // Repulsion
-    for (let i = 0; i < _gnodes.length; i++) {
-      for (let j = i + 1; j < _gnodes.length; j++) {
-        const dx = _gnodes[j].x - _gnodes[i].x || 0.1;
-        const dy = _gnodes[j].y - _gnodes[i].y || 0.1;
-        const d = Math.sqrt(dx*dx + dy*dy) || 1;
-        const f = _K * _K / d;
-        const fx = f * dx / d, fy = f * dy / d;
+  function _gSimulate() {
+    if (_gtick > 400) return;
+    _gtick++;
+    var W = _canvas.width, H = _canvas.height;
+    var i, j, dx, dy, d, minD, fMag, fx, fy;
+    for (i = 0; i < _gnodes.length; i++) {
+      for (j = i + 1; j < _gnodes.length; j++) {
+        dx = _gnodes[j].x - _gnodes[i].x || .01;
+        dy = _gnodes[j].y - _gnodes[i].y || .01;
+        d  = Math.sqrt(dx * dx + dy * dy) || .01;
+        if (d > 400) continue;
+        minD = (_gnodes[i].radius || 10) + (_gnodes[j].radius || 10) + 22;
+        fMag = d < minD ? _REP_K * _REP_K * 6 / d : _REP_K * _REP_K / d;
+        fx = fMag * dx / d; fy = fMag * dy / d;
         _gnodes[i].vx -= fx; _gnodes[i].vy -= fy;
         _gnodes[j].vx += fx; _gnodes[j].vy += fy;
       }
     }
-    // Attraction along edges
     _gedges.forEach(function(e) {
-      const s = _gmap[e.source], t = _gmap[e.target];
+      var s = _gmap[e.source], t = _gmap[e.target];
       if (!s || !t) return;
-      const dx = t.x - s.x, dy = t.y - s.y;
-      const d = Math.sqrt(dx*dx + dy*dy) || 1;
-      const f = (d - _K) / d * 0.12;
-      s.vx += f*dx; s.vy += f*dy;
-      t.vx -= f*dx; t.vy -= f*dy;
+      var edx = t.x - s.x, edy = t.y - s.y;
+      var ed  = Math.sqrt(edx * edx + edy * edy) || 1;
+      var ef  = (ed - _SPRING_K) / ed * 0.09;
+      s.vx += ef * edx; s.vy += ef * edy;
+      t.vx -= ef * edx; t.vy -= ef * edy;
     });
-    // Centre gravity + integrate
     _gnodes.forEach(function(n) {
-      if (n.pinned) return;
-      n.vx += (W/2 - n.x) * 0.003;
-      n.vy += (H/2 - n.y) * 0.003;
+      var cl = _CLUSTER[n.type] || [.5, .5];
+      n.vx += (cl[0] * W - n.x) * .008;
+      n.vy += (cl[1] * H - n.y) * .008;
       n.vx *= _DAMP; n.vy *= _DAMP;
-      n.x = Math.max(16, Math.min(W - 16, n.x + n.vx));
-      n.y = Math.max(16, Math.min(H - 16, n.y + n.vy));
+      var r = (n.radius || 10) + 8;
+      n.x = Math.max(r, Math.min(W - r, n.x + n.vx));
+      n.y = Math.max(r, Math.min(H - r, n.y + n.vy));
     });
   }
 
-  const _R = 10;
-  function _draw() {
-    const W = _canvas.width, H = _canvas.height;
+  function _gNbrSet(nodeId) {
+    var s = {};
+    s[nodeId] = true;
+    _gedges.forEach(function(e) {
+      if (e.source === nodeId) s[e.target] = true;
+      if (e.target === nodeId) s[e.source] = true;
+    });
+    return s;
+  }
+
+  function _gDraw() {
+    var W = _canvas.width, H = _canvas.height;
     _ctx.clearRect(0, 0, W, H);
     _ctx.save();
-    _ctx.translate(_panX, _panY);
-    // Edges
+    _ctx.translate(_gpanX, _gpanY);
+    _ctx.scale(_gzoom, _gzoom);
+
+    var nbrs = _gHovNode ? _gNbrSet(_gHovNode.id) : null;
+
     _gedges.forEach(function(e) {
-      const s = _gmap[e.source], t = _gmap[e.target];
+      var s = _gmap[e.source], t = _gmap[e.target];
       if (!s || !t) return;
+      var hi = _gHovNode && (e.source === _gHovNode.id || e.target === _gHovNode.id);
+      _ctx.globalAlpha = hi ? .92 : (_gHovNode ? .12 : .42);
       _ctx.beginPath();
-      _ctx.setLineDash(e.dashed ? [5,3] : []);
-      _ctx.moveTo(s.x, s.y); _ctx.lineTo(t.x, t.y);
+      _ctx.setLineDash(e.dashed ? [5, 3] : []);
+      _ctx.moveTo(s.x, s.y);
+      _ctx.lineTo(t.x, t.y);
       _ctx.strokeStyle = e.color || '#475569';
-      _ctx.lineWidth = 1.5;
-      _ctx.globalAlpha = 0.55;
+      _ctx.lineWidth   = hi ? 2.5 / _gzoom : 1.5 / _gzoom;
       _ctx.stroke();
-      _ctx.globalAlpha = 1;
+      if (hi) {
+        var angle = Math.atan2(t.y - s.y, t.x - s.x);
+        var tr = (t.radius || 10) + 4;
+        var ax = t.x - tr * Math.cos(angle), ay = t.y - tr * Math.sin(angle);
+        _ctx.setLineDash([]);
+        _ctx.beginPath();
+        _ctx.moveTo(ax, ay);
+        _ctx.lineTo(ax - 9 * Math.cos(angle - .4), ay - 9 * Math.sin(angle - .4));
+        _ctx.lineTo(ax - 9 * Math.cos(angle + .4), ay - 9 * Math.sin(angle + .4));
+        _ctx.closePath();
+        _ctx.fillStyle = e.color || '#475569';
+        _ctx.fill();
+      }
     });
     _ctx.setLineDash([]);
-    // Nodes
+    _ctx.globalAlpha = 1;
+
     _gnodes.forEach(function(n) {
+      var r    = n.radius || 10;
+      var isHov = _gHovNode && _gHovNode.id === n.id;
+      var isSel = _gSelNode && _gSelNode.id === n.id;
+      var dim   = nbrs && !nbrs[n.id];
+      _ctx.globalAlpha = dim ? .18 : 1;
+
+      if (isSel) {
+        _ctx.beginPath();
+        _ctx.arc(n.x, n.y, r + 6, 0, Math.PI * 2);
+        _ctx.strokeStyle = '#f8fafc';
+        _ctx.lineWidth   = 2 / _gzoom;
+        _ctx.stroke();
+      }
       _ctx.beginPath();
-      _ctx.arc(n.x, n.y, _R, 0, Math.PI*2);
+      _ctx.arc(n.x, n.y, isHov ? r + 3 : r, 0, Math.PI * 2);
       _ctx.fillStyle = n.color || '#94a3b8';
       _ctx.fill();
-      const border = n.border_color && n.border_color !== '#94a3b8' ? n.border_color : null;
-      if (border) {
-        _ctx.strokeStyle = border; _ctx.lineWidth = 2.5; _ctx.stroke();
+      if (n.border_color && n.border_color !== '#94a3b8') {
+        _ctx.strokeStyle = n.border_color;
+        _ctx.lineWidth   = (isHov ? 3 : 2) / _gzoom;
+        _ctx.stroke();
       }
-      _ctx.fillStyle = '#e2e8f0'; _ctx.font = '9px system-ui';
-      _ctx.textAlign = 'center';
-      const lbl = (n.label || n.id).slice(0, 22);
-      _ctx.fillText(lbl, n.x, n.y + _R + 10);
+      if (n.internet_facing) {
+        _ctx.beginPath();
+        _ctx.arc(n.x + r * .65, n.y - r * .65, 3.5, 0, Math.PI * 2);
+        _ctx.fillStyle = '#f8fafc';
+        _ctx.fill();
+      }
     });
+    _ctx.globalAlpha = 1;
     _ctx.restore();
   }
 
-  // Pan
-  let _panX = 0, _panY = 0, _dragging = false, _lmx = 0, _lmy = 0;
-  _canvas.addEventListener('mousedown', function(e) { _dragging=true; _lmx=e.offsetX; _lmy=e.offsetY; });
-  _canvas.addEventListener('mouseup',   function()  { _dragging=false; });
-  _canvas.addEventListener('mouseleave',function()  { _dragging=false; });
-  _canvas.addEventListener('mousemove', function(e) {
-    if (!_dragging) return;
-    _panX += e.offsetX - _lmx; _panY += e.offsetY - _lmy;
-    _lmx = e.offsetX; _lmy = e.offsetY;
-  });
+  window._gZoomFit = function() {
+    if (!_gnodes.length) return;
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    _gnodes.forEach(function(n) {
+      var r = (n.radius || 10) + 4;
+      if (n.x - r < x0) x0 = n.x - r;
+      if (n.x + r > x1) x1 = n.x + r;
+      if (n.y - r < y0) y0 = n.y - r;
+      if (n.y + r > y1) y1 = n.y + r;
+    });
+    var W = _canvas.width, H = _canvas.height, pad = 40;
+    var sx = (W - pad * 2) / (x1 - x0 || 1);
+    var sy = (H - pad * 2) / (y1 - y0 || 1);
+    _gzoom = Math.min(sx, sy, 3);
+    _gpanX = pad - x0 * _gzoom + ((W - pad * 2) - (x1 - x0) * _gzoom) / 2;
+    _gpanY = pad - y0 * _gzoom + ((H - pad * 2) - (y1 - y0) * _gzoom) / 2;
+  };
 
-  (function _loop() { _simulate(); _draw(); requestAnimationFrame(_loop); })();
+  window._gZoomBy = function(factor) {
+    var cx = _canvas.width / 2, cy = _canvas.height / 2;
+    var nz = Math.max(.2, Math.min(5, _gzoom * factor));
+    _gpanX = cx - (cx - _gpanX) * (nz / _gzoom);
+    _gpanY = cy - (cy - _gpanY) * (nz / _gzoom);
+    _gzoom = nz;
+  };
+
+  function _gHit(ox, oy) {
+    var wx = (ox - _gpanX) / _gzoom, wy = (oy - _gpanY) / _gzoom;
+    for (var i = _gnodes.length - 1; i >= 0; i--) {
+      var n = _gnodes[i], r = (n.radius || 10) + 5;
+      if ((wx - n.x) * (wx - n.x) + (wy - n.y) * (wy - n.y) <= r * r) return n;
+    }
+    return null;
+  }
+
+  var _SEV_BG = {CRITICAL:'#fee2e2',HIGH:'#ffedd5',MEDIUM:'#fef3c7',LOW:'#ecfccb',INFO:'#dbeafe'};
+  var _SEV_FG = {CRITICAL:'#dc2626',HIGH:'#ea580c',MEDIUM:'#d97706',LOW:'#65a30d',INFO:'#2563eb'};
+  var _NC = {
+    iam_role:'#7c3aed',iam_user:'#7c3aed',eks_service_account:'#7c3aed',
+    ec2_instance:'#2563eb',eks_pod:'#2563eb',eks_node:'#2563eb',
+    s3_bucket:'#16a34a',rds_instance:'#16a34a',secrets_manager:'#16a34a',ssm_parameter:'#16a34a',
+    lambda_function:'#d97706',vpc:'#0891b2',security_group:'#0891b2',vpc_endpoint:'#0891b2',
+    web_endpoint:'#dc2626',imds:'#dc2626',
+  };
+
+  function _gOpenPanel(n) {
+    _gSelNode = n;
+    document.getElementById('cy-p-type').textContent  = (n.type || '').replace(/_/g, ' ');
+    document.getElementById('cy-p-label').textContent = n.label || n.id;
+    var badges = document.getElementById('cy-p-badges');
+    badges.innerHTML = '';
+    if (n.severity) {
+      var b = document.createElement('span');
+      b.className = 'badge badge-' + n.severity;
+      b.textContent = n.severity;
+      badges.appendChild(b);
+    }
+    if (n.internet_facing) {
+      var b2 = document.createElement('span');
+      b2.className = 'badge';
+      b2.style.cssText = 'background:#fef3c7;color:#b45309;margin-left:6px';
+      b2.textContent = 'INTERNET-FACING';
+      badges.appendChild(b2);
+    }
+    document.getElementById('cy-p-arn').textContent = n.id;
+    var nbrsEl = document.getElementById('cy-p-neighbors');
+    nbrsEl.innerHTML = '';
+    _gedges.forEach(function(e) {
+      var other = null, dir = '';
+      if (e.source === n.id) { other = _gmap[e.target]; dir = '\u2192 '; }
+      if (e.target === n.id) { other = _gmap[e.source]; dir = '\u2190 '; }
+      if (!other) return;
+      var row = document.createElement('div');
+      row.className = 'cy-p-nbr';
+      var dot = document.createElement('span');
+      dot.className = 'cy-ndot';
+      dot.style.background = _NC[other.type] || '#94a3b8';
+      row.appendChild(dot);
+      var txt = document.createElement('span');
+      txt.style.flex = '1';
+      txt.textContent = dir + (other.label || other.id).slice(0, 30);
+      row.appendChild(txt);
+      var rel = document.createElement('span');
+      rel.style.cssText = 'font-size:.65rem;color:rgba(255,255,255,.3)';
+      rel.textContent = e.label || '';
+      row.appendChild(rel);
+      nbrsEl.appendChild(row);
+    });
+    document.getElementById('cy-p-nbr-wrap').style.display = nbrsEl.children.length ? '' : 'none';
+    _panel.classList.add('open');
+  }
+
+  window._gClosePanel = function() {
+    _panel.classList.remove('open');
+    _gSelNode = null;
+  };
+
+  _canvas.addEventListener('mousedown', function(e) {
+    _gDragging = true; _glmx = e.offsetX; _glmy = e.offsetY;
+  });
+  _canvas.addEventListener('mouseup', function(e) {
+    if (!_gDragging) return;
+    var moved = Math.abs(e.offsetX - _glmx) + Math.abs(e.offsetY - _glmy);
+    _gDragging = false;
+    if (moved < 4) {
+      var n = _gHit(e.offsetX, e.offsetY);
+      if (n) _gOpenPanel(n); else _gClosePanel();
+    }
+  });
+  _canvas.addEventListener('mouseleave', function() {
+    _gDragging = false; _gHovNode = null;
+    if (_tip) _tip.style.display = 'none';
+  });
+  _canvas.addEventListener('mousemove', function(e) {
+    if (_gDragging) {
+      _gpanX += e.offsetX - _glmx; _gpanY += e.offsetY - _glmy;
+      _glmx = e.offsetX; _glmy = e.offsetY;
+      return;
+    }
+    var n = _gHit(e.offsetX, e.offsetY);
+    _gHovNode = n;
+    if (n && _tip) {
+      _canvas.style.cursor = 'pointer';
+      var tx = Math.min(e.offsetX + 14, _canvas.offsetWidth - 250);
+      var ty = Math.max(e.offsetY - 50, 4);
+      _tip.style.left = tx + 'px'; _tip.style.top = ty + 'px';
+      _tip.style.display = 'block';
+      var sev = n.severity;
+      _tip.innerHTML =
+        '<strong style="color:#f8fafc">' + (n.label || n.id).slice(0, 48) + '</strong>' +
+        '<div class="tip-type">' + (n.type || '').replace(/_/g, ' ') +
+        (sev ? ' &middot; <span style="background:' + (_SEV_BG[sev]||'') + ';color:' + (_SEV_FG[sev]||'') +
+               ';padding:1px 6px;border-radius:9999px;font-size:.65rem;font-weight:700">' + sev + '</span>' : '') +
+        '</div>';
+    } else {
+      _canvas.style.cursor = _gDragging ? 'grabbing' : 'grab';
+      if (_tip) _tip.style.display = 'none';
+    }
+  });
+  _canvas.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    var nz = Math.max(.15, Math.min(6, _gzoom * factor));
+    _gpanX = e.offsetX - (e.offsetX - _gpanX) * (nz / _gzoom);
+    _gpanY = e.offsetY - (e.offsetY - _gpanY) * (nz / _gzoom);
+    _gzoom = nz;
+  }, {passive: false});
+
+  window.addEventListener('resize', function() { _gResize(); _gInitPos(); });
+
+  _gResize();
+  _gInitPos();
+  for (var _pi = 0; _pi < 280; _pi++) _gSimulate();
+  window._gZoomFit();
+
+  (function _gLoop() { _gSimulate(); _gDraw(); requestAnimationFrame(_gLoop); })();
 })();
 {% endif %}
 
@@ -815,6 +1074,414 @@ _navSections.forEach(id => { const el = document.getElementById(id); if (el) _na
 
 // Initial filter count
 document.addEventListener('DOMContentLoaded', applyFilters);
+</script>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
+# Full-size graph page template
+# ---------------------------------------------------------------------------
+
+_GRAPH_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Attack Graph &mdash; {{ target_url }}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+.hdr{display:flex;align-items:center;gap:12px;padding:9px 18px;background:#1e293b;border-bottom:1px solid rgba(255,255,255,.09);flex-shrink:0}
+.hdr-title{font-size:.875rem;font-weight:700;color:#f8fafc}
+.hdr-sub{font-size:.75rem;color:rgba(255,255,255,.35)}
+.hdr-sep{width:1px;height:18px;background:rgba(255,255,255,.1);margin:0 2px}
+.hdr-stat{font-size:.75rem;color:rgba(255,255,255,.4);padding:2px 8px;background:rgba(255,255,255,.06);border-radius:9999px}
+.hdr-stat strong{color:#f8fafc}
+.ctrl{display:flex;align-items:center;gap:6px;margin-left:auto}
+.btn{padding:4px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#94a3b8;border-radius:4px;font-size:.75rem;cursor:pointer;transition:background .12s,color .12s}
+.btn:hover{background:rgba(255,255,255,.12);color:#f8fafc}
+.btn-icon{padding:4px 9px}
+.main{flex:1;display:flex;overflow:hidden;position:relative}
+#gc{display:block;flex:1;cursor:grab}
+#gc:active{cursor:grabbing}
+#tip{position:absolute;display:none;pointer-events:none;background:#1e293b;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:8px 11px;font-size:.78rem;color:#f8fafc;max-width:240px;box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:20;line-height:1.45}
+#tip .tip-type{font-size:.68rem;color:rgba(255,255,255,.4);margin-top:3px}
+#panel{position:absolute;right:0;top:0;bottom:0;width:280px;background:#1e293b;border-left:1px solid rgba(255,255,255,.08);overflow-y:auto;transform:translateX(100%);transition:transform .18s ease;z-index:10}
+#panel.open{transform:translateX(0)}
+.panel-head{padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:flex-start;gap:8px}
+.panel-close{margin-left:auto;cursor:pointer;color:rgba(255,255,255,.3);font-size:1.1rem;padding:0 2px;flex-shrink:0;line-height:1}
+.panel-close:hover{color:#f8fafc}
+.panel-body{padding:14px 16px}
+.p-type{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:5px}
+.p-label{font-size:.875rem;font-weight:700;color:#f8fafc;line-height:1.4;word-break:break-all;margin-bottom:10px}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.badge-CRITICAL{background:#fee2e2;color:#dc2626}
+.badge-HIGH{background:#ffedd5;color:#ea580c}
+.badge-MEDIUM{background:#fef3c7;color:#d97706}
+.badge-LOW{background:#ecfccb;color:#65a30d}
+.badge-INFO{background:#dbeafe;color:#2563eb}
+.p-section{margin-top:12px}
+.p-sec-title{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:6px}
+.p-arn{font-family:monospace;font-size:.72rem;color:#94a3b8;word-break:break-all;line-height:1.5}
+.p-neighbor{font-size:.75rem;color:#94a3b8;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:6px}
+.p-neighbor:last-child{border-bottom:none}
+.ndot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.legend{position:absolute;bottom:12px;left:12px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:9px 13px;display:flex;flex-wrap:wrap;gap:5px 14px;font-size:.72rem;color:rgba(255,255,255,.45);z-index:5;max-width:540px}
+.li{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.ldot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.lline{width:16px;height:2px;flex-shrink:0}
+.ldash{background:repeating-linear-gradient(90deg,#dc2626 0 4px,transparent 4px 7px)}
+.zoom-ctrls{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:4px;z-index:5}
+</style>
+</head>
+<body>
+<header class="hdr">
+  <span class="hdr-title">Attack Graph</span>
+  <span class="hdr-sep"></span>
+  <span class="hdr-sub">{{ target_url }}</span>
+  <span class="hdr-stat"><strong id="stat-n">0</strong> nodes</span>
+  <span class="hdr-stat"><strong id="stat-e">0</strong> edges</span>
+  <div class="ctrl">
+    <button class="btn" onclick="zoomFit()">Fit all</button>
+    <button class="btn" onclick="resetView()">Reset</button>
+    <a href="report.html" class="btn">&larr; Report</a>
+  </div>
+</header>
+<div class="main">
+  <canvas id="gc"></canvas>
+  <div id="tip"></div>
+  <div class="zoom-ctrls">
+    <button class="btn btn-icon" onclick="zoomBy(1.25)">+</button>
+    <button class="btn btn-icon" onclick="zoomBy(0.8)">&minus;</button>
+  </div>
+  <div id="panel">
+    <div class="panel-head">
+      <div>
+        <div class="p-type" id="p-type"></div>
+        <div class="p-label" id="p-label"></div>
+        <div id="p-badges"></div>
+      </div>
+      <span class="panel-close" onclick="closePanel()">&#x2715;</span>
+    </div>
+    <div class="panel-body">
+      <div class="p-section">
+        <div class="p-sec-title">Resource ID</div>
+        <div class="p-arn" id="p-arn"></div>
+      </div>
+      <div class="p-section" id="p-nbr-wrap">
+        <div class="p-sec-title">Connected nodes</div>
+        <div id="p-neighbors"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="legend">
+  <span class="li"><span class="ldot" style="background:#7c3aed"></span>IAM / Principal</span>
+  <span class="li"><span class="ldot" style="background:#2563eb"></span>Compute (EC2 / EKS)</span>
+  <span class="li"><span class="ldot" style="background:#16a34a"></span>Storage / Secrets</span>
+  <span class="li"><span class="ldot" style="background:#d97706"></span>Lambda</span>
+  <span class="li"><span class="ldot" style="background:#dc2626"></span>Web / IMDS</span>
+  <span class="li"><span class="ldot" style="background:#0891b2"></span>Network</span>
+  <span class="li"><span class="lline ldash"></span>Exploit path</span>
+</div>
+<script>
+var DATA = {{ graph_json | safe }};
+
+var canvas = document.getElementById('gc');
+var ctx    = canvas.getContext('2d');
+var tip    = document.getElementById('tip');
+var panel  = document.getElementById('panel');
+
+var nodes  = (DATA.elements.nodes || []).map(function(n) {
+  return Object.assign({}, n.data, {x:0, y:0, vx:0, vy:0});
+});
+var edges  = (DATA.elements.edges || []).map(function(e) { return e.data; });
+var nmap   = {};
+nodes.forEach(function(n) { nmap[n.id] = n; });
+
+document.getElementById('stat-n').textContent = nodes.length;
+document.getElementById('stat-e').textContent = edges.length;
+
+var CLUSTER = {
+  iam_role:           [0.12, 0.40],
+  iam_user:           [0.12, 0.62],
+  eks_service_account:[0.18, 0.28],
+  ec2_instance:       [0.40, 0.30],
+  eks_node:           [0.48, 0.22],
+  eks_pod:            [0.55, 0.28],
+  lambda_function:    [0.70, 0.22],
+  s3_bucket:          [0.76, 0.68],
+  rds_instance:       [0.55, 0.72],
+  secrets_manager:    [0.88, 0.42],
+  ssm_parameter:      [0.88, 0.60],
+  vpc:                [0.25, 0.18],
+  security_group:     [0.35, 0.14],
+  vpc_endpoint:       [0.22, 0.52],
+  web_endpoint:       [0.44, 0.68],
+  imds:               [0.58, 0.50],
+};
+
+var REP_K = 220, SPRING_K = 110, DAMP = 0.80;
+var zoom = 1, panX = 0, panY = 0, tick = 0;
+var hovNode = null, selNode = null;
+var dragging = false, lmx = 0, lmy = 0;
+
+function resize() {
+  canvas.width  = canvas.offsetWidth  || canvas.parentElement.offsetWidth  || 900;
+  canvas.height = canvas.offsetHeight || canvas.parentElement.offsetHeight || 600;
+}
+
+function initPos() {
+  var W = canvas.width, H = canvas.height;
+  var cols = Math.ceil(Math.sqrt(nodes.length * (W / H)));
+  var cw = W / (cols + 1), ch = H / (Math.ceil(nodes.length / cols) + 1);
+  nodes.forEach(function(n, i) {
+    var col = i % cols, row = Math.floor(i / cols);
+    n.x  = (col + 1) * cw + (Math.random() - .5) * cw * .5;
+    n.y  = (row + 1) * ch + (Math.random() - .5) * ch * .5;
+    n.vx = 0; n.vy = 0;
+  });
+  tick = 0;
+}
+
+function simulate() {
+  if (tick > 400) return;
+  tick++;
+  var W = canvas.width, H = canvas.height;
+  var i, j, dx, dy, d, minD, fMag, fx, fy;
+  for (i = 0; i < nodes.length; i++) {
+    for (j = i + 1; j < nodes.length; j++) {
+      dx = nodes[j].x - nodes[i].x || .01;
+      dy = nodes[j].y - nodes[i].y || .01;
+      d  = Math.sqrt(dx * dx + dy * dy) || .01;
+      if (d > 400) continue;
+      minD = (nodes[i].radius || 10) + (nodes[j].radius || 10) + 22;
+      fMag = d < minD ? REP_K * REP_K * 6 / d : REP_K * REP_K / d;
+      fx = fMag * dx / d; fy = fMag * dy / d;
+      nodes[i].vx -= fx; nodes[i].vy -= fy;
+      nodes[j].vx += fx; nodes[j].vy += fy;
+    }
+  }
+  edges.forEach(function(e) {
+    var s = nmap[e.source], t = nmap[e.target];
+    if (!s || !t) return;
+    var edx = t.x - s.x, edy = t.y - s.y;
+    var ed  = Math.sqrt(edx * edx + edy * edy) || 1;
+    var ef  = (ed - SPRING_K) / ed * 0.09;
+    s.vx += ef * edx; s.vy += ef * edy;
+    t.vx -= ef * edx; t.vy -= ef * edy;
+  });
+  nodes.forEach(function(n) {
+    var cl = CLUSTER[n.type] || [.5, .5];
+    n.vx += (cl[0] * W - n.x) * .008;
+    n.vy += (cl[1] * H - n.y) * .008;
+    n.vx *= DAMP; n.vy *= DAMP;
+    var r = (n.radius || 10) + 8;
+    n.x = Math.max(r, Math.min(W - r, n.x + n.vx));
+    n.y = Math.max(r, Math.min(H - r, n.y + n.vy));
+  });
+}
+
+function neighborSet(nodeId) {
+  var s = {};
+  s[nodeId] = true;
+  edges.forEach(function(e) {
+    if (e.source === nodeId) s[e.target] = true;
+    if (e.target === nodeId) s[e.source] = true;
+  });
+  return s;
+}
+
+function draw() {
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  var nbrs = hovNode ? neighborSet(hovNode.id) : null;
+  edges.forEach(function(e) {
+    var s = nmap[e.source], t = nmap[e.target];
+    if (!s || !t) return;
+    var hi = hovNode && (e.source === hovNode.id || e.target === hovNode.id);
+    ctx.globalAlpha = hi ? .92 : (hovNode ? .12 : .42);
+    ctx.beginPath();
+    ctx.setLineDash(e.dashed ? [5, 3] : []);
+    ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y);
+    ctx.strokeStyle = e.color || '#475569';
+    ctx.lineWidth   = hi ? 2.5 / zoom : 1.5 / zoom;
+    ctx.stroke();
+    if (hi) {
+      var angle = Math.atan2(t.y - s.y, t.x - s.x);
+      var tr = (t.radius || 10) + 4;
+      var ax = t.x - tr * Math.cos(angle), ay = t.y - tr * Math.sin(angle);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax - 9 * Math.cos(angle - .4), ay - 9 * Math.sin(angle - .4));
+      ctx.lineTo(ax - 9 * Math.cos(angle + .4), ay - 9 * Math.sin(angle + .4));
+      ctx.closePath();
+      ctx.fillStyle = e.color || '#475569';
+      ctx.fill();
+    }
+  });
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  nodes.forEach(function(n) {
+    var r = n.radius || 10;
+    var isHov = hovNode && hovNode.id === n.id;
+    var isSel = selNode && selNode.id === n.id;
+    var dim   = nbrs && !nbrs[n.id];
+    ctx.globalAlpha = dim ? .18 : 1;
+    if (isSel) {
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = '#f8fafc'; ctx.lineWidth = 2 / zoom; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(n.x, n.y, isHov ? r + 3 : r, 0, Math.PI * 2);
+    ctx.fillStyle = n.color || '#94a3b8'; ctx.fill();
+    if (n.border_color && n.border_color !== '#94a3b8') {
+      ctx.strokeStyle = n.border_color; ctx.lineWidth = (isHov ? 3 : 2) / zoom; ctx.stroke();
+    }
+    if (n.internet_facing) {
+      ctx.beginPath(); ctx.arc(n.x + r * .65, n.y - r * .65, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#f8fafc'; ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1; ctx.restore();
+}
+
+function zoomFit() {
+  if (!nodes.length) return;
+  var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  nodes.forEach(function(n) {
+    var r = (n.radius || 10) + 4;
+    if (n.x - r < x0) x0 = n.x - r; if (n.x + r > x1) x1 = n.x + r;
+    if (n.y - r < y0) y0 = n.y - r; if (n.y + r > y1) y1 = n.y + r;
+  });
+  var W = canvas.width, H = canvas.height, pad = 48;
+  var sx = (W - pad * 2) / (x1 - x0 || 1);
+  var sy = (H - pad * 2) / (y1 - y0 || 1);
+  zoom = Math.min(sx, sy, 3);
+  panX = pad - x0 * zoom + ((W - pad * 2) - (x1 - x0) * zoom) / 2;
+  panY = pad - y0 * zoom + ((H - pad * 2) - (y1 - y0) * zoom) / 2;
+}
+
+function zoomBy(factor) {
+  var cx = canvas.width / 2, cy = canvas.height / 2;
+  var nz = Math.max(.2, Math.min(5, zoom * factor));
+  panX = cx - (cx - panX) * (nz / zoom);
+  panY = cy - (cy - panY) * (nz / zoom);
+  zoom = nz;
+}
+
+function resetView() { zoom = 1; panX = 0; panY = 0; initPos(); }
+
+function hitNode(ox, oy) {
+  var wx = (ox - panX) / zoom, wy = (oy - panY) / zoom;
+  for (var i = nodes.length - 1; i >= 0; i--) {
+    var n = nodes[i], r = (n.radius || 10) + 5;
+    if ((wx - n.x) * (wx - n.x) + (wy - n.y) * (wy - n.y) <= r * r) return n;
+  }
+  return null;
+}
+
+var SEV_BG = {CRITICAL:'#fee2e2',HIGH:'#ffedd5',MEDIUM:'#fef3c7',LOW:'#ecfccb',INFO:'#dbeafe'};
+var SEV_FG = {CRITICAL:'#dc2626',HIGH:'#ea580c',MEDIUM:'#d97706',LOW:'#65a30d',INFO:'#2563eb'};
+var NC = {
+  iam_role:'#7c3aed',iam_user:'#7c3aed',eks_service_account:'#7c3aed',
+  ec2_instance:'#2563eb',eks_pod:'#2563eb',eks_node:'#2563eb',
+  s3_bucket:'#16a34a',rds_instance:'#16a34a',secrets_manager:'#16a34a',ssm_parameter:'#16a34a',
+  lambda_function:'#d97706',vpc:'#0891b2',security_group:'#0891b2',vpc_endpoint:'#0891b2',
+  web_endpoint:'#dc2626',imds:'#dc2626',
+};
+
+function openPanel(n) {
+  selNode = n;
+  document.getElementById('p-type').textContent  = (n.type || '').replace(/_/g, ' ');
+  document.getElementById('p-label').textContent = n.label || n.id;
+  var badges = document.getElementById('p-badges');
+  badges.innerHTML = '';
+  if (n.severity) {
+    var b = document.createElement('span');
+    b.className = 'badge badge-' + n.severity; b.textContent = n.severity;
+    badges.appendChild(b);
+  }
+  if (n.internet_facing) {
+    var b2 = document.createElement('span');
+    b2.className = 'badge';
+    b2.style.cssText = 'background:#fef3c7;color:#b45309;margin-left:6px';
+    b2.textContent = 'INTERNET-FACING'; badges.appendChild(b2);
+  }
+  document.getElementById('p-arn').textContent = n.id;
+  var nbrsEl = document.getElementById('p-neighbors');
+  nbrsEl.innerHTML = '';
+  edges.forEach(function(e) {
+    var other = null, dir = '';
+    if (e.source === n.id) { other = nmap[e.target];  dir = '\u2192 '; }
+    if (e.target === n.id) { other = nmap[e.source];  dir = '\u2190 '; }
+    if (!other) return;
+    var row = document.createElement('div'); row.className = 'p-neighbor';
+    var dot = document.createElement('span'); dot.className = 'ndot';
+    dot.style.background = NC[other.type] || '#94a3b8'; row.appendChild(dot);
+    var txt = document.createElement('span'); txt.style.flex = '1';
+    txt.textContent = dir + (other.label || other.id).slice(0, 32); row.appendChild(txt);
+    var rel = document.createElement('span');
+    rel.style.cssText = 'font-size:.65rem;color:rgba(255,255,255,.3)';
+    rel.textContent = e.label || ''; row.appendChild(rel);
+    nbrsEl.appendChild(row);
+  });
+  document.getElementById('p-nbr-wrap').style.display = nbrsEl.children.length ? '' : 'none';
+  panel.classList.add('open');
+}
+
+function closePanel() { panel.classList.remove('open'); selNode = null; }
+
+canvas.addEventListener('mousedown', function(e) { dragging = true; lmx = e.offsetX; lmy = e.offsetY; });
+canvas.addEventListener('mouseup', function(e) {
+  if (!dragging) return;
+  var moved = Math.abs(e.offsetX - lmx) + Math.abs(e.offsetY - lmy);
+  dragging = false;
+  if (moved < 4) { var n = hitNode(e.offsetX, e.offsetY); if (n) openPanel(n); else closePanel(); }
+});
+canvas.addEventListener('mouseleave', function() { dragging = false; hovNode = null; tip.style.display = 'none'; });
+canvas.addEventListener('mousemove', function(e) {
+  if (dragging) {
+    panX += e.offsetX - lmx; panY += e.offsetY - lmy;
+    lmx = e.offsetX; lmy = e.offsetY; return;
+  }
+  var n = hitNode(e.offsetX, e.offsetY);
+  hovNode = n;
+  if (n) {
+    canvas.style.cursor = 'pointer';
+    var tx = Math.min(e.offsetX + 14, canvas.offsetWidth - 250);
+    var ty = Math.max(e.offsetY - 50, 4);
+    tip.style.left = tx + 'px'; tip.style.top = ty + 'px'; tip.style.display = 'block';
+    var sev = n.severity;
+    tip.innerHTML =
+      '<strong style="color:#f8fafc">' + (n.label || n.id).slice(0, 48) + '</strong>' +
+      '<div class="tip-type">' + (n.type || '').replace(/_/g, ' ') +
+      (sev ? ' &middot; <span style="background:' + (SEV_BG[sev]||'') + ';color:' + (SEV_FG[sev]||'') +
+             ';padding:1px 6px;border-radius:9999px;font-size:.65rem;font-weight:700">' + sev + '</span>' : '') +
+      '</div>';
+  } else {
+    canvas.style.cursor = dragging ? 'grabbing' : 'grab';
+    tip.style.display = 'none';
+  }
+});
+canvas.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  var factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  var nz = Math.max(.15, Math.min(6, zoom * factor));
+  panX = e.offsetX - (e.offsetX - panX) * (nz / zoom);
+  panY = e.offsetY - (e.offsetY - panY) * (nz / zoom);
+  zoom = nz;
+}, {passive: false});
+
+window.addEventListener('resize', function() { resize(); });
+
+resize();
+initPos();
+for (var _pi = 0; _pi < 280; _pi++) simulate();
+zoomFit();
+(function loop() { simulate(); draw(); requestAnimationFrame(loop); })();
 </script>
 </body>
 </html>"""
@@ -919,6 +1586,22 @@ class HtmlReporter:
         env = Environment(loader=BaseLoader(), autoescape=True)
         env.filters["md_bold"] = _md_bold
 
+        # Write full-size graph.html when graph data is available
+        graph_path = ""
+        if graph_json != "{}":
+            graph_page_path = output_path.parent / "graph.html"
+            try:
+                graph_tmpl = env.from_string(_GRAPH_TEMPLATE)
+                graph_html = graph_tmpl.render(
+                    target_url=self._cfg.target.url,
+                    graph_json=graph_json,
+                )
+                graph_page_path.write_text(graph_html, encoding="utf-8")
+                graph_path = "graph.html"
+                log.info("Graph page written to %s", graph_page_path)
+            except Exception as exc:
+                log.warning("Could not write graph.html: %s", exc)
+
         template = env.from_string(_HTML_TEMPLATE)
         html = template.render(
             target_url=self._cfg.target.url,
@@ -940,6 +1623,7 @@ class HtmlReporter:
             compliance_rows=compliance_rows,
             playbook=playbook,
             graph_json=graph_json,
+            graph_path=graph_path,
         )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

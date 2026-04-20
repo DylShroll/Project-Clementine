@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Attack Graph — Example</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+
+/* Header */
+.hdr{display:flex;align-items:center;gap:12px;padding:9px 18px;background:#1e293b;border-bottom:1px solid rgba(255,255,255,.09);flex-shrink:0}
+.hdr-title{font-size:.875rem;font-weight:700;color:#f8fafc}
+.hdr-sub{font-size:.75rem;color:rgba(255,255,255,.35)}
+.hdr-sep{width:1px;height:18px;background:rgba(255,255,255,.1);margin:0 2px}
+.hdr-stat{font-size:.75rem;color:rgba(255,255,255,.4);padding:2px 8px;background:rgba(255,255,255,.06);border-radius:9999px}
+.hdr-stat strong{color:#f8fafc}
+.ctrl{display:flex;align-items:center;gap:6px;margin-left:auto}
+.btn{padding:4px 12px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:#94a3b8;border-radius:4px;font-size:.75rem;cursor:pointer;transition:background .12s,color .12s}
+.btn:hover{background:rgba(255,255,255,.12);color:#f8fafc}
+.btn-icon{padding:4px 8px}
+
+/* Main */
+.main{flex:1;display:flex;overflow:hidden;position:relative}
+#gc{display:block;flex:1;cursor:grab}
+#gc:active{cursor:grabbing}
+
+/* Tooltip */
+#tip{position:absolute;display:none;pointer-events:none;background:#1e293b;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:8px 11px;font-size:.78rem;color:#f8fafc;max-width:240px;box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:20;line-height:1.45}
+#tip .tip-type{font-size:.68rem;color:rgba(255,255,255,.4);margin-top:3px}
+
+/* Detail panel */
+#panel{position:absolute;right:0;top:0;bottom:0;width:280px;background:#1e293b;border-left:1px solid rgba(255,255,255,.08);padding:0;overflow-y:auto;transform:translateX(100%);transition:transform .18s ease;z-index:10}
+#panel.open{transform:translateX(0)}
+.panel-head{padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,.07);display:flex;align-items:flex-start;gap:8px}
+.panel-close{margin-left:auto;cursor:pointer;color:rgba(255,255,255,.3);font-size:1.1rem;padding:0 2px;flex-shrink:0;line-height:1}
+.panel-close:hover{color:#f8fafc}
+.panel-body{padding:14px 16px}
+.p-type{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:5px}
+.p-label{font-size:.875rem;font-weight:700;color:#f8fafc;line-height:1.4;word-break:break-all;margin-bottom:10px}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:9999px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.badge-CRITICAL{background:#fee2e2;color:#dc2626}
+.badge-HIGH{background:#ffedd5;color:#ea580c}
+.badge-MEDIUM{background:#fef3c7;color:#d97706}
+.badge-LOW{background:#ecfccb;color:#65a30d}
+.badge-INFO{background:#dbeafe;color:#2563eb}
+.p-section{margin-top:12px}
+.p-sec-title{font-size:.65rem;text-transform:uppercase;letter-spacing:.09em;color:rgba(255,255,255,.3);margin-bottom:6px}
+.p-arn{font-family:monospace;font-size:.72rem;color:#94a3b8;word-break:break-all;line-height:1.5}
+.p-neighbor{font-size:.75rem;color:#94a3b8;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;gap:6px}
+.p-neighbor:last-child{border-bottom:none}
+.ndot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+
+/* Legend */
+.legend{position:absolute;bottom:12px;left:12px;background:rgba(15,23,42,.88);backdrop-filter:blur(4px);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:9px 13px;display:flex;flex-wrap:wrap;gap:5px 14px;font-size:.72rem;color:rgba(255,255,255,.45);z-index:5;max-width:540px}
+.li{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.ldot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.lline{width:16px;height:2px;flex-shrink:0}
+.ldash{background:repeating-linear-gradient(90deg,#dc2626 0 4px,transparent 4px 7px)}
+
+/* Mini zoom controls */
+.zoom-ctrls{position:absolute;top:12px;right:12px;display:flex;flex-direction:column;gap:4px;z-index:5}
+</style>
+</head>
+<body>
+
+<header class="hdr">
+  <span class="hdr-title">Attack Graph</span>
+  <span class="hdr-sep"></span>
+  <span class="hdr-sub">example-app.company.com</span>
+  <span class="hdr-stat"><strong id="stat-n">0</strong> nodes</span>
+  <span class="hdr-stat"><strong id="stat-e">0</strong> edges</span>
+  <div class="ctrl">
+    <button class="btn" onclick="zoomFit()">Fit all</button>
+    <button class="btn" onclick="resetView()">Reset</button>
+  </div>
+</header>
+
+<div class="main">
+  <canvas id="gc"></canvas>
+  <div id="tip"></div>
+
+  <div class="zoom-ctrls">
+    <button class="btn btn-icon" onclick="zoomBy(1.25)" title="Zoom in">+</button>
+    <button class="btn btn-icon" onclick="zoomBy(0.8)" title="Zoom out">−</button>
+  </div>
+
+  <div id="panel">
+    <div class="panel-head">
+      <div>
+        <div class="p-type" id="p-type"></div>
+        <div class="p-label" id="p-label"></div>
+        <div id="p-badges"></div>
+      </div>
+      <span class="panel-close" onclick="closePanel()">✕</span>
+    </div>
+    <div class="panel-body">
+      <div class="p-section">
+        <div class="p-sec-title">Resource ID</div>
+        <div class="p-arn" id="p-arn"></div>
+      </div>
+      <div class="p-section" id="p-nbr-wrap">
+        <div class="p-sec-title">Connected nodes</div>
+        <div id="p-neighbors"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span class="li"><span class="ldot" style="background:#7c3aed"></span>IAM / Principal</span>
+  <span class="li"><span class="ldot" style="background:#2563eb"></span>Compute (EC2 / EKS)</span>
+  <span class="li"><span class="ldot" style="background:#16a34a"></span>Storage / Secrets</span>
+  <span class="li"><span class="ldot" style="background:#d97706"></span>Lambda</span>
+  <span class="li"><span class="ldot" style="background:#dc2626"></span>Web / IMDS</span>
+  <span class="li"><span class="ldot" style="background:#0891b2"></span>Network</span>
+  <span class="li"><span class="lline ldash"></span>Exploit path</span>
+</div>
+
+<script>
+// ── Example data ────────────────────────────────────────────────────────────
+const DATA = {
+  elements: {
+    nodes: [
+      {data:{id:'web',    label:'DVWA Web Application',          type:'web_endpoint',    severity:'CRITICAL', internet_facing:true,  color:'#dc2626', border_color:'#dc2626', radius:14}},
+      {data:{id:'sqli',   label:'SQL Injection (login.php)',      type:'web_endpoint',    severity:'CRITICAL', internet_facing:true,  color:'#dc2626', border_color:'#dc2626', radius:14}},
+      {data:{id:'imds',   label:'EC2 IMDS (169.254.169.254)',     type:'imds',            severity:null,       internet_facing:false, color:'#dc2626', border_color:'#94a3b8', radius:8}},
+      {data:{id:'ec2app', label:'i-05fb02cc (app server)',        type:'ec2_instance',    severity:'HIGH',     internet_facing:true,  color:'#2563eb', border_color:'#ea580c', radius:12}},
+      {data:{id:'sg',     label:'sg-web (0.0.0.0/0:80,443)',      type:'security_group',  severity:'HIGH',     internet_facing:false, color:'#0891b2', border_color:'#ea580c', radius:11}},
+      {data:{id:'vpc',    label:'vpc-00eb513 (prod)',              type:'vpc',             severity:'INFO',     internet_facing:false, color:'#0891b2', border_color:'#2563eb', radius:8}},
+      {data:{id:'role',   label:'AppServerRole (AdministratorAccess)', type:'iam_role',  severity:'CRITICAL', internet_facing:false, color:'#7c3aed', border_color:'#dc2626', radius:14}},
+      {data:{id:'user',   label:'admin-svc (stale access key)',   type:'iam_user',        severity:'CRITICAL', internet_facing:false, color:'#7c3aed', border_color:'#dc2626', radius:14}},
+      {data:{id:'s3data', label:'s3://prod-app-data',             type:'s3_bucket',       severity:'HIGH',     internet_facing:false, color:'#16a34a', border_color:'#ea580c', radius:12}},
+      {data:{id:'rds',    label:'prod-mysql-db',                  type:'rds_instance',    severity:'HIGH',     internet_facing:false, color:'#16a34a', border_color:'#ea580c', radius:12}},
+      {data:{id:'secret', label:'secret/db-master-password',      type:'secrets_manager', severity:'CRITICAL', internet_facing:false, color:'#16a34a', border_color:'#dc2626', radius:14}},
+      {data:{id:'ssm',    label:'ssm:/prod/stripe-api-key',       type:'ssm_parameter',   severity:'HIGH',     internet_facing:false, color:'#16a34a', border_color:'#ea580c', radius:12}},
+      {data:{id:'lambda', label:'func-payment-processor',         type:'lambda_function', severity:'MEDIUM',   internet_facing:false, color:'#d97706', border_color:'#d97706', radius:10}},
+      {data:{id:'lrole',  label:'LambdaExecRole',                 type:'iam_role',        severity:'MEDIUM',   internet_facing:false, color:'#7c3aed', border_color:'#d97706', radius:10}},
+      {data:{id:'s3log',  label:'s3://access-logs-2024',          type:'s3_bucket',       severity:'LOW',      internet_facing:false, color:'#16a34a', border_color:'#65a30d', radius:9}},
+      {data:{id:'ec2db',  label:'i-0abc456 (db proxy)',           type:'ec2_instance',    severity:'MEDIUM',   internet_facing:false, color:'#2563eb', border_color:'#d97706', radius:10}},
+    ],
+    edges: [
+      {data:{id:'e1',  source:'web',    target:'imds',   label:'SSRF_REACHABLE', color:'#dc2626', dashed:true}},
+      {data:{id:'e2',  source:'sqli',   target:'rds',    label:'SSRF_REACHABLE', color:'#dc2626', dashed:true}},
+      {data:{id:'e3',  source:'ec2app', target:'web',    label:'HOSTS_APP',      color:'#64748b', dashed:false}},
+      {data:{id:'e4',  source:'ec2app', target:'sqli',   label:'HOSTS_APP',      color:'#64748b', dashed:false}},
+      {data:{id:'e5',  source:'ec2app', target:'role',   label:'ATTACHED_TO',    color:'#7c3aed', dashed:false}},
+      {data:{id:'e6',  source:'sg',     target:'ec2app', label:'ATTACHED_TO',    color:'#0891b2', dashed:false}},
+      {data:{id:'e7',  source:'vpc',    target:'ec2app', label:'ROUTES_TO',      color:'#475569', dashed:false}},
+      {data:{id:'e8',  source:'vpc',    target:'ec2db',  label:'ROUTES_TO',      color:'#475569', dashed:false}},
+      {data:{id:'e9',  source:'role',   target:'s3data', label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+      {data:{id:'e10', source:'role',   target:'rds',    label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+      {data:{id:'e11', source:'role',   target:'secret', label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+      {data:{id:'e12', source:'role',   target:'ssm',    label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+      {data:{id:'e13', source:'role',   target:'user',   label:'CAN_ASSUME',     color:'#7c3aed', dashed:false}},
+      {data:{id:'e14', source:'lambda', target:'lrole',  label:'ATTACHED_TO',    color:'#d97706', dashed:false}},
+      {data:{id:'e15', source:'lrole',  target:'secret', label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+      {data:{id:'e16', source:'ec2app', target:'s3log',  label:'HAS_PERMISSION', color:'#16a34a', dashed:false}},
+    ]
+  }
+};
+
+// ── Setup ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('gc');
+const ctx    = canvas.getContext('2d');
+const tip    = document.getElementById('tip');
+const panel  = document.getElementById('panel');
+
+const nodes  = DATA.elements.nodes.map(n => ({...n.data, x:0, y:0, vx:0, vy:0}));
+const edges  = DATA.elements.edges.map(e => e.data);
+const nmap   = {};
+nodes.forEach(n => nmap[n.id] = n);
+
+document.getElementById('stat-n').textContent = nodes.length;
+document.getElementById('stat-e').textContent = edges.length;
+
+// Cluster anchor positions (0–1 of canvas W/H)
+const CLUSTER = {
+  iam_role:         [0.12, 0.40],
+  iam_user:         [0.12, 0.62],
+  eks_service_account:[0.18, 0.28],
+  ec2_instance:     [0.40, 0.30],
+  eks_node:         [0.48, 0.22],
+  eks_pod:          [0.55, 0.28],
+  lambda_function:  [0.70, 0.22],
+  s3_bucket:        [0.76, 0.68],
+  rds_instance:     [0.55, 0.72],
+  secrets_manager:  [0.88, 0.42],
+  ssm_parameter:    [0.88, 0.60],
+  vpc:              [0.25, 0.18],
+  security_group:   [0.35, 0.14],
+  vpc_endpoint:     [0.22, 0.52],
+  web_endpoint:     [0.44, 0.68],
+  imds:             [0.58, 0.50],
+};
+
+// ── State ────────────────────────────────────────────────────────────────────
+let zoom = 1, panX = 0, panY = 0;
+let tick = 0;
+let hovNode = null, selNode = null;
+let dragging = false, lmx = 0, lmy = 0;
+
+// ── Canvas resize ─────────────────────────────────────────────────────────────
+function resize() {
+  canvas.width  = canvas.offsetWidth  || canvas.parentElement.offsetWidth  || 900;
+  canvas.height = canvas.offsetHeight || canvas.parentElement.offsetHeight || 600;
+}
+
+function initPos() {
+  const W = canvas.width, H = canvas.height;
+  const cols = Math.ceil(Math.sqrt(nodes.length * (W / H)));
+  const rows = Math.ceil(nodes.length / cols);
+  const cw = W / (cols + 1), ch = H / (rows + 1);
+  nodes.forEach((n, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    n.x  = (col + 1) * cw + (Math.random() - .5) * cw * .5;
+    n.y  = (row + 1) * ch + (Math.random() - .5) * ch * .5;
+    n.vx = 0; n.vy = 0;
+  });
+  tick = 0;
+}
+
+// ── Physics ───────────────────────────────────────────────────────────────────
+const REP_K = 220, SPRING_K = 110, DAMP = 0.80;
+
+function simulate() {
+  if (tick > 400) return;
+  tick++;
+  const W = canvas.width, H = canvas.height;
+
+  // Repulsion
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      const dx = nodes[j].x - nodes[i].x || .01;
+      const dy = nodes[j].y - nodes[i].y || .01;
+      const d  = Math.sqrt(dx * dx + dy * dy) || .01;
+      if (d > 400) continue;
+      const minD = (nodes[i].radius || 10) + (nodes[j].radius || 10) + 22;
+      const fMag = d < minD
+        ? REP_K * REP_K * 6 / d
+        : REP_K * REP_K     / d;
+      const fx = fMag * dx / d, fy = fMag * dy / d;
+      nodes[i].vx -= fx; nodes[i].vy -= fy;
+      nodes[j].vx += fx; nodes[j].vy += fy;
+    }
+  }
+
+  // Edge springs
+  edges.forEach(e => {
+    const s = nmap[e.source], t = nmap[e.target];
+    if (!s || !t) return;
+    const dx = t.x - s.x, dy = t.y - s.y;
+    const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f  = (d - SPRING_K) / d * 0.09;
+    s.vx += f * dx; s.vy += f * dy;
+    t.vx -= f * dx; t.vy -= f * dy;
+  });
+
+  // Cluster pull + integrate
+  nodes.forEach(n => {
+    const cl = CLUSTER[n.type] || [.5, .5];
+    n.vx += (cl[0] * W - n.x) * .008;
+    n.vy += (cl[1] * H - n.y) * .008;
+    n.vx *= DAMP; n.vy *= DAMP;
+    const r = (n.radius || 10) + 8;
+    n.x = Math.max(r, Math.min(W - r, n.x + n.vx));
+    n.y = Math.max(r, Math.min(H - r, n.y + n.vy));
+  });
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function neighborSet(nodeId) {
+  const s = new Set([nodeId]);
+  edges.forEach(e => {
+    if (e.source === nodeId) s.add(e.target);
+    if (e.target === nodeId) s.add(e.source);
+  });
+  return s;
+}
+
+function draw() {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+
+  const nbrs = hovNode ? neighborSet(hovNode.id) : null;
+
+  // Edges
+  edges.forEach(e => {
+    const s = nmap[e.source], t = nmap[e.target];
+    if (!s || !t) return;
+    const hi = hovNode && (e.source === hovNode.id || e.target === hovNode.id);
+    ctx.globalAlpha = hi ? .92 : (hovNode ? .12 : .42);
+    ctx.beginPath();
+    ctx.setLineDash(e.dashed ? [5, 3] : []);
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(t.x, t.y);
+    ctx.strokeStyle = e.color || '#475569';
+    ctx.lineWidth   = hi ? 2.5 / zoom : 1.5 / zoom;
+    ctx.stroke();
+
+    // Arrow head on highlighted edge
+    if (hi) {
+      const angle = Math.atan2(t.y - s.y, t.x - s.x);
+      const tr = (t.radius || 10) + 4;
+      const ax = t.x - tr * Math.cos(angle);
+      const ay = t.y - tr * Math.sin(angle);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax - 9 * Math.cos(angle - .4), ay - 9 * Math.sin(angle - .4));
+      ctx.lineTo(ax - 9 * Math.cos(angle + .4), ay - 9 * Math.sin(angle + .4));
+      ctx.closePath();
+      ctx.fillStyle = e.color || '#475569';
+      ctx.fill();
+    }
+  });
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  // Nodes
+  nodes.forEach(n => {
+    const r     = n.radius || 10;
+    const isHov = hovNode && hovNode.id === n.id;
+    const isSel = selNode && selNode.id === n.id;
+    const dim   = nbrs && !nbrs.has(n.id);
+
+    ctx.globalAlpha = dim ? .18 : 1;
+
+    // Selection ring
+    if (isSel) {
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = '#f8fafc';
+      ctx.lineWidth   = 2 / zoom;
+      ctx.stroke();
+    }
+
+    // Node fill
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, isHov ? r + 3 : r, 0, Math.PI * 2);
+    ctx.fillStyle = n.color || '#94a3b8';
+    ctx.fill();
+
+    // Severity border
+    if (n.border_color && n.border_color !== '#94a3b8') {
+      ctx.strokeStyle = n.border_color;
+      ctx.lineWidth   = (isHov ? 3 : 2) / zoom;
+      ctx.stroke();
+    }
+
+    // Internet-facing indicator
+    if (n.internet_facing) {
+      ctx.beginPath();
+      ctx.arc(n.x + r * .65, n.y - r * .65, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#f8fafc';
+      ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ── Zoom helpers ──────────────────────────────────────────────────────────────
+function zoomFit() {
+  if (!nodes.length) return;
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  nodes.forEach(n => {
+    const r = (n.radius || 10) + 4;
+    x0 = Math.min(x0, n.x - r); x1 = Math.max(x1, n.x + r);
+    y0 = Math.min(y0, n.y - r); y1 = Math.max(y1, n.y + r);
+  });
+  const W = canvas.width, H = canvas.height, pad = 40;
+  const scaleX = (W - pad * 2) / (x1 - x0 || 1);
+  const scaleY = (H - pad * 2) / (y1 - y0 || 1);
+  zoom = Math.min(scaleX, scaleY, 3);
+  panX = pad - x0 * zoom + ((W - pad * 2) - (x1 - x0) * zoom) / 2;
+  panY = pad - y0 * zoom + ((H - pad * 2) - (y1 - y0) * zoom) / 2;
+}
+
+function zoomBy(factor) {
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  const nz = Math.max(.2, Math.min(5, zoom * factor));
+  panX = cx - (cx - panX) * (nz / zoom);
+  panY = cy - (cy - panY) * (nz / zoom);
+  zoom = nz;
+}
+
+function resetView() {
+  zoom = 1; panX = 0; panY = 0;
+  initPos(); tick = 0;
+}
+
+// ── Hit test ──────────────────────────────────────────────────────────────────
+function hitNode(ox, oy) {
+  const wx = (ox - panX) / zoom, wy = (oy - panY) / zoom;
+  for (const n of nodes) {
+    const r = (n.radius || 10) + 5;
+    if ((wx - n.x) ** 2 + (wy - n.y) ** 2 <= r * r) return n;
+  }
+  return null;
+}
+
+// ── Detail panel ─────────────────────────────────────────────────────────────
+const SEV_BG = {CRITICAL:'#fee2e2',HIGH:'#ffedd5',MEDIUM:'#fef3c7',LOW:'#ecfccb',INFO:'#dbeafe'};
+const SEV_FG = {CRITICAL:'#dc2626',HIGH:'#ea580c',MEDIUM:'#d97706',LOW:'#65a30d',INFO:'#2563eb'};
+const NODE_COLORS = {
+  iam_role:'#7c3aed',iam_user:'#7c3aed',eks_service_account:'#7c3aed',
+  ec2_instance:'#2563eb',eks_pod:'#2563eb',eks_node:'#2563eb',
+  s3_bucket:'#16a34a',rds_instance:'#16a34a',secrets_manager:'#16a34a',ssm_parameter:'#16a34a',
+  lambda_function:'#d97706',vpc:'#0891b2',security_group:'#0891b2',vpc_endpoint:'#0891b2',
+  web_endpoint:'#dc2626',imds:'#dc2626',
+};
+
+function openPanel(n) {
+  selNode = n;
+  document.getElementById('p-type').textContent = (n.type || '').replace(/_/g, ' ');
+  document.getElementById('p-label').textContent = n.label || n.id;
+  const badges = document.getElementById('p-badges');
+  badges.innerHTML = '';
+  if (n.severity) {
+    const b = document.createElement('span');
+    b.className = 'badge badge-' + n.severity;
+    b.textContent = n.severity;
+    badges.appendChild(b);
+  }
+  if (n.internet_facing) {
+    const b = document.createElement('span');
+    b.className = 'badge';
+    b.style.cssText = 'background:#fef3c7;color:#b45309;margin-left:6px';
+    b.textContent = 'INTERNET-FACING';
+    badges.appendChild(b);
+  }
+  document.getElementById('p-arn').textContent = n.id;
+
+  const nbrsEl = document.getElementById('p-neighbors');
+  nbrsEl.innerHTML = '';
+  edges.forEach(e => {
+    let other = null, dir = '';
+    if (e.source === n.id) { other = nmap[e.target];  dir = '→ '; }
+    if (e.target === n.id) { other = nmap[e.source];  dir = '← '; }
+    if (!other) return;
+    const d = document.createElement('div');
+    d.className = 'p-neighbor';
+    const dot = document.createElement('span');
+    dot.className = 'ndot';
+    dot.style.background = NODE_COLORS[other.type] || '#94a3b8';
+    d.appendChild(dot);
+    d.innerHTML += dir + '<span style="flex:1">' + (other.label||other.id).slice(0,32) + '</span>';
+    d.innerHTML += '<span style="font-size:.65rem;color:rgba(255,255,255,.3)">' + e.label + '</span>';
+    nbrsEl.appendChild(d);
+  });
+  document.getElementById('p-nbr-wrap').style.display = nbrsEl.children.length ? '' : 'none';
+  panel.classList.add('open');
+}
+
+function closePanel() {
+  panel.classList.remove('open');
+  selNode = null;
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+canvas.addEventListener('mousedown', e => {
+  dragging = true; lmx = e.offsetX; lmy = e.offsetY;
+});
+canvas.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  const moved = Math.abs(e.offsetX - lmx) + Math.abs(e.offsetY - lmy);
+  dragging = false;
+  if (moved < 4) {
+    const n = hitNode(e.offsetX, e.offsetY);
+    if (n) openPanel(n); else closePanel();
+  }
+});
+canvas.addEventListener('mouseleave', () => { dragging = false; hovNode = null; tip.style.display = 'none'; });
+
+canvas.addEventListener('mousemove', e => {
+  if (dragging) {
+    panX += e.offsetX - lmx; panY += e.offsetY - lmy;
+    lmx = e.offsetX; lmy = e.offsetY;
+    return;
+  }
+  const n = hitNode(e.offsetX, e.offsetY);
+  hovNode = n;
+  if (n) {
+    canvas.style.cursor = 'pointer';
+    const tx = Math.min(e.offsetX + 14, canvas.offsetWidth - 250);
+    const ty = Math.max(e.offsetY - 50, 4);
+    tip.style.left    = tx + 'px';
+    tip.style.top     = ty + 'px';
+    tip.style.display = 'block';
+    const sev = n.severity;
+    tip.innerHTML =
+      '<strong style="color:#f8fafc">' + (n.label || n.id).slice(0, 48) + '</strong>' +
+      '<div class="tip-type">' + (n.type || '').replace(/_/g, ' ') +
+      (sev ? ' · <span style="background:' + (SEV_BG[sev]||'') + ';color:' + (SEV_FG[sev]||'') +
+             ';padding:1px 6px;border-radius:9999px;font-size:.65rem;font-weight:700">' + sev + '</span>' : '') +
+      '</div>';
+  } else {
+    canvas.style.cursor = dragging ? 'grabbing' : 'grab';
+    tip.style.display = 'none';
+  }
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const nz = Math.max(.15, Math.min(6, zoom * factor));
+  panX = e.offsetX - (e.offsetX - panX) * (nz / zoom);
+  panY = e.offsetY - (e.offsetY - panY) * (nz / zoom);
+  zoom = nz;
+}, { passive: false });
+
+window.addEventListener('resize', () => { resize(); initPos(); });
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+resize();
+initPos();
+
+// Run 280 ticks silently before first draw, then zoom to fit
+let preRun = 280;
+while (preRun-- > 0) simulate();
+zoomFit();
+
+(function loop() { simulate(); draw(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>

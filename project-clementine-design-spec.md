@@ -82,7 +82,7 @@ MCP servers (connected via stdio or HTTP transport):
 ### 2.1 Component roles
 
 | Component | Responsibility | Interface |
-|---|---|---|
+| --- | --- | --- |
 | Orchestration engine | Phase sequencing, parallel dispatch, state management, MCP server lifecycle | Core process |
 | Shared findings store | Normalized storage for all findings, metadata, and evidence | SQLite / PostgreSQL |
 | Correlation engine | Fuses app-layer and infra findings into compound attack paths | Internal module |
@@ -353,7 +353,7 @@ Migration path: Replace the two AWS server entries in `mcp-config.json` with a s
 **Key check categories**:
 
 | Category | cloud-audit checks | Prowler checks | Why it matters for web apps |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | IAM | Root MFA, access key rotation, overprivileged policies | 60+ IAM checks, credential report | Compromised app → IAM escalation path |
 | Network | Public security groups, unrestricted ingress | VPC flow logs, NACLs, peering | Network-level exposure of backend services |
 | Data | S3 public access, unencrypted RDS, KMS config | S3, RDS, EBS, DynamoDB encryption | Data exfiltration risk after app compromise |

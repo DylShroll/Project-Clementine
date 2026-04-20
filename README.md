@@ -483,6 +483,7 @@ clementine run --config clementine.yaml
 
 ## Things I want to do with the project
 
+- Fix the darn knowledge graph? It's not adding value in test cases
 - Embeddings model layer on top of the knowledge graph for semantic similarity search and novel exploit chain suggestion
 - GUI / web dashboard for live assessment monitoring
 - Azure, GCP integrations
@@ -491,3 +492,4 @@ clementine run --config clementine.yaml
 - Increase backoff time on `clementine.mcp_client` failures during rate-limit errors
 - Decrease costs/scan.
 - Increase llm tracability/visibility
+- Increase scan speed

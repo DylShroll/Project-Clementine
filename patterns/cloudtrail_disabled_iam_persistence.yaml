@@ -1,0 +1,96 @@
+# Pattern: CloudTrail disabled + role with IAM write access → silent backdoor IAM account creation
+#
+# CloudTrail is the primary audit log for AWS API activity.  When it is
+# disabled (or has gaps in regional coverage), all subsequent API calls —
+# including IAM user creation, access key generation, and policy attachment —
+# are unlogged.  An attacker who gains any foothold with a role that holds
+# iam:CreateUser, iam:CreateAccessKey, or iam:AttachUserPolicy can create a
+# persistent backdoor IAM account with no evidence in any log.  Without
+# CloudWatch alarms on IAM changes, defenders have no alerting path either.
+#
+# MITRE ATT&CK: T1562.008 (Impair Defenses: Disable Cloud Logs),
+# T1098.001 (Account Manipulation: Additional Cloud Credentials),
+# T1136.003 (Create Account: Cloud Account)
+
+pattern:
+  name: "CloudTrail disabled — silent IAM backdoor creation"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: cloudtrail-not-enabled
+
+pivot:
+  - type: infra_finding
+    check: iam-role-allows-iam-write
+    relationship: same_account
+
+  - type: infra_finding
+    check: cloudwatch-no-iam-change-alarm
+    relationship: same_account
+
+impact: >
+  CloudTrail is not recording management events in one or more AWS regions.
+  Any API activity in those regions — including credential and identity
+  operations — produces no CloudTrail events and will not appear in Security
+  Hub, GuardDuty, or any SIEM that ingests CloudTrail.  A role that permits
+  iam:CreateUser, iam:CreateAccessKey, and iam:AttachUserPolicy (or equivalent
+  AdministratorAccess) can be used to create a new IAM user with long-lived
+  access keys and attach AdministratorAccess — establishing persistent account
+  access that survives EC2 termination, AMI rotation, and Lambda redeployment.
+  Because CloudWatch has no metric filter alerting on IAM changes, the backdoor
+  account remains undetected indefinitely.  Incident responders cannot
+  reconstruct the timeline of compromise because the relevant API calls were
+  never logged.
+
+remediation_priority:
+  - summary: "Enable CloudTrail in ALL regions with a multi-region trail writing to an S3 bucket with access logging and integrity validation"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws cloudtrail create-trail \
+        --name org-management-trail \
+        --s3-bucket-name <TRAIL_BUCKET> \
+        --is-multi-region-trail \
+        --enable-log-file-validation
+      aws cloudtrail start-logging --name org-management-trail
+    iac_snippet: |
+      resource "aws_cloudtrail" "main" {
+        name                          = "org-management-trail"
+        s3_bucket_name                = aws_s3_bucket.trail.id
+        is_multi_region_trail         = true
+        enable_log_file_validation    = true
+        include_global_service_events = true
+      }
+
+  - summary: "Immediately audit IAM for unexpected users or access keys created during the logging gap — delete any unauthorised credentials"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      # List all IAM users and their access key ages
+      aws iam generate-credential-report
+      aws iam get-credential-report --query 'Content' --output text | base64 -d
+
+  - summary: "Create CloudWatch metric filters and alarms for IAM CreateUser, CreateAccessKey, and AttachUserPolicy events"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws logs put-metric-filter \
+        --log-group-name CloudTrail/DefaultLogGroup \
+        --filter-name IAMChanges \
+        --filter-pattern '{($.eventName=CreateUser)||($.eventName=CreateAccessKey)||($.eventName=AttachUserPolicy)}' \
+        --metric-transformations metricName=IAMChanges,metricNamespace=CISBenchmark,metricValue=1
+      aws cloudwatch put-metric-alarm \
+        --alarm-name IAMChangesAlarm \
+        --metric-name IAMChanges \
+        --namespace CISBenchmark \
+        --statistic Sum \
+        --period 300 \
+        --threshold 1 \
+        --comparison-operator GreaterThanOrEqualToThreshold \
+        --evaluation-periods 1 \
+        --alarm-actions <SNS_TOPIC_ARN>
+
+  - summary: "Apply least-privilege to all IAM roles — remove iam:CreateUser, iam:CreateAccessKey, and iam:* wildcard grants unless explicitly required"
+    effort: MEDIUM
+    breaks_chain: false

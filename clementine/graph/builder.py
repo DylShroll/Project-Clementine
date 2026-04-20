@@ -27,6 +27,61 @@ _RESOURCE_TYPE_MAP: dict[str, AWSNodeType] = {
     "url": AWSNodeType.WEB_ENDPOINT,
 }
 
+# ARN service-prefix → AWSNodeType (used when resource_type is absent)
+_ARN_SERVICE_MAP: dict[str, AWSNodeType] = {
+    "iam":                  AWSNodeType.IAM_ROLE,
+    "s3":                   AWSNodeType.S3_BUCKET,
+    "rds":                  AWSNodeType.RDS_INSTANCE,
+    "lambda":               AWSNodeType.LAMBDA_FUNCTION,
+    "secretsmanager":       AWSNodeType.SECRETS_MANAGER,
+    "ssm":                  AWSNodeType.SSM_PARAMETER,
+    "eks":                  AWSNodeType.EKS_NODE,
+    "vpc":                  AWSNodeType.VPC,
+    "elasticloadbalancing": AWSNodeType.VPC_ENDPOINT,
+    "apigateway":           AWSNodeType.VPC_ENDPOINT,
+}
+
+# ARN resource-type sub-string → AWSNodeType (checked after service prefix)
+_ARN_RESOURCE_MAP: dict[str, AWSNodeType] = {
+    "security-group": AWSNodeType.SECURITY_GROUP,
+    "security_group": AWSNodeType.SECURITY_GROUP,
+    "vpc":            AWSNodeType.VPC,
+    "subnet":         AWSNodeType.VPC,
+    "network-acl":    AWSNodeType.VPC,
+    "volume":         AWSNodeType.EC2_INSTANCE,
+    "instance":       AWSNodeType.EC2_INSTANCE,
+}
+
+
+def _infer_node_type(resource_type: str | None, resource_id: str | None) -> AWSNodeType:
+    """Resolve AWSNodeType from resource_type field first, then ARN prefix."""
+    # 1. Explicit resource_type mapping (fastest path)
+    if resource_type and resource_type in _RESOURCE_TYPE_MAP:
+        return _RESOURCE_TYPE_MAP[resource_type]
+
+    # 2. ARN-based inference
+    if resource_id and resource_id.startswith("arn:"):
+        parts = resource_id.split(":", 6)
+        service = parts[2] if len(parts) > 2 else ""
+        resource = parts[5] if len(parts) > 5 else ""
+
+        # Service-level match
+        if service in _ARN_SERVICE_MAP:
+            return _ARN_SERVICE_MAP[service]
+
+        # EC2 sub-resource match
+        if service == "ec2":
+            for key, ntype in _ARN_RESOURCE_MAP.items():
+                if key in resource:
+                    return ntype
+            return AWSNodeType.EC2_INSTANCE
+
+    # 3. URL → web endpoint
+    if resource_id and (resource_id.startswith("http://") or resource_id.startswith("https://")):
+        return AWSNodeType.WEB_ENDPOINT
+
+    return AWSNodeType.EC2_INSTANCE
+
 # Map existing GraphRelationship string values to AWSEdgeType
 _RELATIONSHIP_MAP: dict[str, AWSEdgeType] = {
     "hosts": AWSEdgeType.HOSTS_APP,
@@ -178,7 +233,7 @@ class GraphBuilder:
                 continue
             if not f.resource_id:
                 continue
-            node_type = _RESOURCE_TYPE_MAP.get(f.resource_type or "", AWSNodeType.WEB_ENDPOINT)
+            node_type = _infer_node_type(f.resource_type, f.resource_id)
             self._add_node(GraphNode(
                 node_id=f.resource_id,
                 node_type=node_type,
@@ -194,7 +249,7 @@ class GraphBuilder:
         for f in findings:
             if not f.resource_id:
                 continue
-            node_type = _RESOURCE_TYPE_MAP.get(f.resource_type or "", AWSNodeType.EC2_INSTANCE)
+            node_type = _infer_node_type(f.resource_type, f.resource_id)
             self._add_node(GraphNode(
                 node_id=f.resource_id,
                 node_type=node_type,
