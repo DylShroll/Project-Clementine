@@ -1,0 +1,62 @@
+# Pattern: CI/CD OIDC misconfiguration → any-repo token accepted → IAM role assumption → supply chain compromise
+#
+# AWS IAM roles that trust GitHub Actions OIDC tokens with an overly broad
+# condition (missing sub claim restriction or wildcarded repo name) can be
+# assumed by any repository or forked repository in the GitHub organisation.
+# A compromised or malicious workflow can then push artefacts, modify
+# infrastructure, or exfiltrate secrets — constituting a supply chain attack.
+
+pattern:
+  name: "CI/CD OIDC misconfiguration to supply chain compromise"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: iam-oidc-trust-policy-too-permissive
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_account
+
+  - type: infra_finding
+    check: s3-bucket-no-versioning
+    relationship: same_account
+
+impact: >
+  The IAM role's OIDC trust policy does not restrict the sub claim to a
+  specific repository — any workflow in the GitHub organisation (or any
+  forked repository, depending on token conditions) can assume the role.
+  With an overprivileged role, a compromised dependency update workflow or
+  a malicious pull-request workflow can push poisoned build artefacts to
+  S3, modify Lambda function code, or update container images.  Because S3
+  versioning is not enabled, the attacker can overwrite legitimate artefacts
+  and delete history — achieving persistent supply chain compromise that
+  survives deployment pipeline runs.
+
+remediation_priority:
+  - summary: "Restrict the OIDC trust policy sub claim to the exact repository and branch that should be allowed to assume the role"
+    effort: LOW
+    breaks_chain: true
+    iac_snippet: |
+      {
+        "Condition": {
+          "StringEquals": {
+            "token.actions.githubusercontent.com:sub":
+              "repo:org/repo:ref:refs/heads/main",
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+          }
+        }
+      }
+
+  - summary: "Enable S3 versioning and Object Lock on all artefact buckets to prevent overwrite-and-delete attacks"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws s3api put-bucket-versioning \
+        --bucket <BUCKET> \
+        --versioning-configuration Status=Enabled
+
+  - summary: "Apply least-privilege to the CI/CD IAM role — restrict to only the specific S3 paths, ECR repositories, and Lambda functions it deploys"
+    effort: MEDIUM
+    breaks_chain: false

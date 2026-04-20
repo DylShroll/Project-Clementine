@@ -1,0 +1,52 @@
+# Pattern: OAuth open redirect → authorisation code interception → account takeover
+#
+# An open redirect in the OAuth redirect_uri allows the authorisation code
+# to be forwarded to an attacker-controlled server.  If PKCE is not enforced
+# and tokens are long-lived, the code can be exchanged for access and refresh
+# tokens.  Absence of refresh token rotation means persistent access
+# survives password resets.
+
+pattern:
+  name: "OAuth open redirect to account takeover"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: open_redirect
+  wstg: WSTG-CLNT-04
+
+pivot:
+  - type: app_finding
+    check: oauth-missing-pkce
+    relationship: same_account
+
+  - type: app_finding
+    check: oauth-no-refresh-token-rotation
+    relationship: same_account
+
+impact: >
+  The open redirect in the OAuth callback endpoint allows an attacker to
+  craft a malicious authorization URL that redirects the victim's browser
+  to an attacker-controlled server after authorisation.  The authorization
+  code is delivered to the attacker in the redirect URL.  Because PKCE is
+  not enforced, the code can be immediately exchanged for access and refresh
+  tokens without knowledge of a code verifier.  Absent refresh token rotation
+  means the attacker retains persistent API access even after the victim
+  changes their password.
+
+remediation_priority:
+  - summary: "Validate redirect_uri against an exact allowlist — reject any URI not registered at OAuth client creation time"
+    effort: LOW
+    breaks_chain: true
+
+  - summary: "Enforce PKCE (Proof Key for Code Exchange) for all OAuth flows — prevents code interception attacks"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable refresh token rotation — issue a new refresh token on every use and invalidate the previous one"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Set short expiry on access tokens (15 minutes) and require re-authentication after suspicious activity"
+    effort: LOW
+    breaks_chain: false

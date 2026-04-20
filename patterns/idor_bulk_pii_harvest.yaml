@@ -1,0 +1,55 @@
+# Pattern: IDOR + no rate limiting + no encryption in transit → bulk PII harvest
+#
+# Insecure Direct Object Reference allows a low-privilege authenticated user
+# to access any other user's data by changing a predictable object ID.
+# Without rate limiting and without enforced TLS, an attacker can
+# systematically enumerate all records — harvesting PII at scale with
+# no detection mechanism.
+
+pattern:
+  name: "IDOR to bulk PII exfiltration"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: IDOR
+  wstg: WSTG-ATHZ-04
+
+pivot:
+  - type: app_finding
+    check: no-rate-limiting
+    relationship: same_account
+
+  - type: app_finding
+    check: missing-tls-enforcement
+    wstg: WSTG-CRYPST-01
+    relationship: same_account
+
+impact: >
+  The IDOR vulnerability allows any authenticated user to read arbitrary
+  user records by substituting a sequential or guessable object ID in the
+  request.  Without rate limiting, the attacker can enumerate the entire
+  user base in minutes using an automated script.  If TLS is not enforced
+  on all endpoints, the harvested data travels in cleartext and may also
+  be intercepted by network-level adversaries.  The result is a mass
+  data breach affecting all users in the system with minimal effort.
+
+remediation_priority:
+  - summary: "Implement object-level authorisation checks on every data-returning endpoint — verify ownership server-side, not via client-supplied IDs"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Enforce TLS on all endpoints and redirect HTTP to HTTPS; set HSTS with a long max-age"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      # ALB: redirect HTTP (80) to HTTPS (443)
+      aws elbv2 create-rule \
+        --listener-arn <HTTP_LISTENER_ARN> \
+        --conditions '[{"Field":"path-pattern","Values":["/*"]}]' \
+        --priority 1 \
+        --actions '[{"Type":"redirect","RedirectConfig":{"Protocol":"HTTPS","StatusCode":"HTTP_301"}}]'
+
+  - summary: "Add per-user and global API rate limiting to detect and block enumeration behaviour"
+    effort: MEDIUM
+    breaks_chain: false

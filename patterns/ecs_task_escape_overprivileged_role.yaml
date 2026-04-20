@@ -1,0 +1,56 @@
+# Pattern: ECS task misconfiguration → container escape → overprivileged task role → account compromise
+#
+# ECS tasks running with privileged mode or hostPID/hostNetwork enabled can
+# break out of the container and access the host EC2 instance.  If the ECS
+# task execution role or the underlying instance role is overprivileged,
+# the attacker moves from container compromise to full AWS account access.
+
+pattern:
+  name: "ECS container escape to account compromise"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: ecs-task-privileged-container
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+impact: >
+  An ECS task definition with privileged: true grants the container root
+  access to the host.  From the host, the attacker reads the EC2 instance
+  profile credentials from the metadata service (IMDSv1 requires no session
+  token).  Because the task execution role or instance role is overprivileged,
+  those credentials provide broad AWS API access.  Any application-layer
+  vulnerability — even a low-severity code execution — escalates directly
+  to full AWS account compromise via this container escape path.
+
+remediation_priority:
+  - summary: "Remove privileged: true from all ECS task definitions — run containers as non-root with read-only root filesystem"
+    effort: MEDIUM
+    breaks_chain: true
+    iac_snippet: |
+      containerDefinitions:
+        - name: app
+          privileged: false
+          readonlyRootFilesystem: true
+          user: "1000:1000"
+
+  - summary: "Enforce IMDSv2 on ECS cluster EC2 instances and restrict IMDS hop limit to 1 to block container-level IMDS access"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required \
+        --http-put-response-hop-limit 1
+
+  - summary: "Apply least-privilege to ECS task execution roles — separate task roles from instance roles"
+    effort: MEDIUM
+    breaks_chain: false

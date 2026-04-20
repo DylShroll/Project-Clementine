@@ -1,0 +1,53 @@
+# Pattern: Cognito identity pool unauthenticated role → direct AWS API access → privilege escalation
+#
+# Amazon Cognito identity pools can grant unauthenticated (guest) identities
+# temporary AWS credentials.  When the unauthenticated role carries excessive
+# permissions, any anonymous user obtains direct AWS API access.  If the
+# application also lacks authorization checks, the attacker can chain this
+# with application-layer access to reach additional internal resources.
+
+pattern:
+  name: "Cognito unauthenticated role to AWS privilege escalation"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: cognito-identity-pool-unauthenticated-enabled
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_account
+
+  - type: app_finding
+    category: broken_access_control
+    wstg: WSTG-ATHZ-01
+    relationship: same_account
+
+impact: >
+  The Cognito identity pool issues temporary AWS credentials to unauthenticated
+  (guest) callers — no login required.  The unauthenticated IAM role attached
+  to the pool carries excessive permissions, meaning any attacker who calls
+  cognito-identity:GetCredentialsForIdentity obtains AWS keys with broad
+  access.  A broken access control finding in the application provides an
+  alternative or parallel path to reach internal resources.  Together, the
+  chain allows a completely unauthenticated attacker to escalate from
+  anonymous visitor to privileged AWS principal.
+
+remediation_priority:
+  - summary: "Disable unauthenticated access in the Cognito identity pool unless explicitly required by the application"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws cognito-identity update-identity-pool \
+        --identity-pool-id <POOL_ID> \
+        --identity-pool-name <NAME> \
+        --no-allow-unauthenticated-identities
+
+  - summary: "Apply least-privilege to the unauthenticated IAM role — limit to the absolute minimum required for guest functionality"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Audit and fix broken access control findings — enforce server-side authorisation checks on all sensitive endpoints"
+    effort: MEDIUM
+    breaks_chain: false

@@ -1,0 +1,61 @@
+# Pattern: SSRF + SSM Parameter Store readable by instance role → secret exfiltration
+#
+# An SSRF vulnerability on an EC2 instance can be used to call the SSM API
+# via the VPC endpoint (or via the instance's attached IAM role credentials
+# obtained from IMDS).  If the instance role has ssm:GetParameter(s) access
+# to sensitive parameters, the attacker retrieves database passwords, API
+# keys, and other secrets without needing direct application access to them.
+
+pattern:
+  name: "SSRF to SSM Parameter Store secret exfiltration"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: SSRF
+  wstg: WSTG-INPV-09
+
+pivot:
+  - type: infra_finding
+    check: ssm-parameter-store-no-kms-encryption
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-role-ssm-overprivileged
+    relationship: same_compute_resource
+
+impact: >
+  The SSRF vulnerability allows the attacker to issue requests via the
+  application server.  Using IMDS-obtained credentials or direct VPC-endpoint
+  access, the attacker calls ssm:GetParameters to enumerate and retrieve
+  plaintext secrets stored in Parameter Store.  Because the parameters are
+  not encrypted with a customer KMS key, they are returned in plaintext in
+  the API response.  Retrieved secrets include database connection strings,
+  third-party API keys, and service account credentials — enabling immediate
+  lateral movement into databases and downstream services.
+
+remediation_priority:
+  - summary: "Fix the SSRF vulnerability — validate and allowlist outbound request destinations; block 169.254.0.0/16 and VPC-internal ranges"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Migrate sensitive parameters to SecureString type with a customer-managed KMS key"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ssm put-parameter \
+        --name /app/db-password \
+        --value <SECRET> \
+        --type SecureString \
+        --key-id <KMS_KEY_ID> \
+        --overwrite
+
+  - summary: "Scope the EC2 instance role's SSM permissions to specific parameter paths required by the application only"
+    effort: MEDIUM
+    breaks_chain: false
+    iac_snippet: |
+      {
+        "Effect": "Allow",
+        "Action": ["ssm:GetParameter"],
+        "Resource": "arn:aws:ssm:*:*:parameter/app/${AWS::StackName}/*"
+      }

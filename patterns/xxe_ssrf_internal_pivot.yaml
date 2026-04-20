@@ -1,0 +1,58 @@
+# Pattern: XXE → SSRF to internal services → sensitive data access
+#
+# An XML External Entity injection vulnerability is used to issue server-side
+# HTTP requests to internal AWS resources (IMDS, internal APIs, private RDS
+# endpoints) that are unreachable from the internet.  Absent network
+# segmentation amplifies the reach of each internal request.
+
+pattern:
+  name: "XXE to internal service pivot"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: XXE
+  wstg: WSTG-INPV-07
+
+pivot:
+  - type: infra_finding
+    check: ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: security-group-unrestricted-ingress
+    relationship: same_account
+
+impact: >
+  The XXE vulnerability allows the attacker to instruct the application server
+  to issue HTTP requests to arbitrary internal addresses.  Because IMDSv1 is
+  enabled, the attacker can reach http://169.254.169.254/latest/meta-data/iam/
+  security-credentials/ and retrieve temporary IAM credentials without
+  requiring a session token.  Permissive security groups mean the same SSRF
+  primitive can reach internal databases, cache clusters, and private APIs.
+  The combination gives an attacker both cloud credentials and direct access
+  to internal services in a single exploit.
+
+remediation_priority:
+  - summary: "Disable external entity resolution in the XML parser (the single most effective fix)"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Java (DocumentBuilderFactory):
+      # factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+      # factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+      # Python (lxml):
+      # etree.XMLParser(resolve_entities=False, no_network=True)
+
+  - summary: "Enforce IMDSv2 on all EC2 instances to block credential theft via SSRF"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required \
+        --http-endpoint enabled
+
+  - summary: "Restrict outbound security group rules to explicitly required destinations — block internal metadata ranges"
+    effort: MEDIUM
+    breaks_chain: false

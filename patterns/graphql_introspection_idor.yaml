@@ -1,0 +1,52 @@
+# Pattern: GraphQL introspection enabled + IDOR → full schema discovery → mass data harvest
+#
+# GraphQL introspection exposes the complete API schema to unauthenticated
+# or low-privilege users.  Combined with object-level authorization failures
+# (IDOR / BOLA), an attacker can enumerate every object type and query
+# arbitrary user records at scale.  Absent rate limiting removes the last
+# barrier to automated bulk extraction.
+
+pattern:
+  name: "GraphQL schema exposure to mass data harvest"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: graphql_introspection_enabled
+  wstg: WSTG-CONF-05
+
+pivot:
+  - type: app_finding
+    category: IDOR
+    wstg: WSTG-ATHZ-04
+    relationship: same_account
+
+  - type: app_finding
+    check: no-rate-limiting
+    relationship: same_account
+
+impact: >
+  GraphQL introspection reveals all object types, field names, and
+  relationships in the API schema — including internal types not exposed
+  by the documented API.  An IDOR vulnerability on one or more object types
+  allows the attacker to query any user's data by iterating IDs.  Without
+  rate limiting, the attacker automates thousands of queries per second,
+  harvesting the complete dataset — user profiles, PII, payment references,
+  session tokens, or internal business data — within minutes.
+
+remediation_priority:
+  - summary: "Disable GraphQL introspection in production environments — enable only for authenticated developers in dev/staging"
+    effort: LOW
+    breaks_chain: true
+
+  - summary: "Implement object-level authorisation checks for every resolver — verify the requesting user owns or is permitted to access each object"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Add query rate limiting and depth/complexity limits to prevent automated bulk extraction"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Implement query allowlisting (persisted queries) in production to restrict execution to known safe queries"
+    effort: HIGH
+    breaks_chain: false

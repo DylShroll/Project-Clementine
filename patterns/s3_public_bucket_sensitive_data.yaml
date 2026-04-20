@@ -1,0 +1,60 @@
+# Pattern: Public S3 bucket + no MFA delete + missing logging → sensitive data exfil
+#
+# A world-readable S3 bucket exposes sensitive objects (backups, PII exports,
+# deployment artefacts).  Without MFA delete an attacker can delete or
+# overwrite objects permanently.  Absent S3 access logging means the access
+# goes undetected and leaves no forensic trail.
+
+pattern:
+  name: "Public S3 bucket to data exfiltration"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: s3-bucket-public-read-access
+
+pivot:
+  - type: infra_finding
+    check: s3-mfa-delete-not-enabled
+    relationship: same_account
+
+  - type: infra_finding
+    check: s3-access-logging-disabled
+    relationship: same_account
+
+impact: >
+  The publicly accessible S3 bucket can be enumerated and downloaded by any
+  internet user without authentication.  If the bucket contains database
+  exports, configuration files, or deployment artefacts, the attacker obtains
+  sensitive data immediately.  Because MFA delete is not enabled, the attacker
+  can also permanently delete objects or replace them with malicious versions
+  using any valid IAM credential that has s3:DeleteObject permission.  Absent
+  access logging means the breach is not detectable after the fact.
+
+remediation_priority:
+  - summary: "Enable S3 Block Public Access at the account and bucket level — single switch that removes all public ACLs and policies"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws s3api put-public-access-block \
+        --bucket <BUCKET_NAME> \
+        --public-access-block-configuration \
+          "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+
+  - summary: "Enable S3 server access logging to a separate security-only bucket for audit trail"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws s3api put-bucket-logging \
+        --bucket <BUCKET_NAME> \
+        --bucket-logging-status \
+          '{"LoggingEnabled":{"TargetBucket":"<LOG_BUCKET>","TargetPrefix":"s3-access/"}}'
+
+  - summary: "Enable MFA delete on versioned buckets to protect against accidental or malicious deletion"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      aws s3api put-bucket-versioning \
+        --bucket <BUCKET_NAME> \
+        --versioning-configuration Status=Enabled,MFADelete=Enabled \
+        --mfa "<SERIAL_NUMBER> <MFA_TOKEN>"

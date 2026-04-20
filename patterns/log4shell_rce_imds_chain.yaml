@@ -1,0 +1,62 @@
+# Pattern: Remote code execution via injection (Log4Shell-style) → IMDS credential theft → account takeover
+#
+# Injection into a logging or processing pipeline (JNDI injection, log4j-style,
+# or equivalent expression-language injection) triggers a remote class load
+# that achieves code execution.  On cloud infrastructure the host IMDS provides
+# IAM credentials.  Combined with an overprivileged role and no GuardDuty
+# detection, exploitation goes unnoticed indefinitely.
+
+pattern:
+  name: "Expression injection RCE to AWS account takeover"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: injection
+  wstg: WSTG-INPV-11
+
+pivot:
+  - type: infra_finding
+    check: ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: guardduty-not-enabled
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+impact: >
+  Expression-language or JNDI injection in a logging or data-processing
+  path triggers a remote class load, achieving remote code execution as
+  the application service account.  The attacker queries the IMDSv1 endpoint
+  (no session token required) and retrieves temporary IAM credentials for
+  the attached instance role.  With GuardDuty disabled, subsequent use of
+  those credentials — creating IAM users for persistence, enumerating S3,
+  launching EC2 instances for cryptomining — generates no automated alerts.
+  The overprivileged role means every AWS service is within reach.
+
+remediation_priority:
+  - summary: "Patch the vulnerable library immediately and disable JNDI lookups where applicable (e.g., log4j2.formatMsgNoLookups=true)"
+    effort: LOW
+    breaks_chain: true
+
+  - summary: "Enforce IMDSv2 on all EC2 instances to block unauthenticated IMDS queries from shell-level exploit code"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required
+
+  - summary: "Enable GuardDuty in all regions for automated detection of credential use from unexpected locations"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws guardduty create-detector --enable --finding-publishing-frequency ONE_HOUR
+
+  - summary: "Apply least-privilege to instance IAM roles and rotate all credentials that may have been exposed"
+    effort: MEDIUM
+    breaks_chain: false

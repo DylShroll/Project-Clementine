@@ -1,0 +1,54 @@
+# Pattern: Unrestricted file upload → web shell → RCE → cloud credential theft
+#
+# An unrestricted file upload endpoint that stores files in a web-accessible
+# directory allows uploading a server-side script (PHP, JSP, ASPX).
+# Executing the web shell achieves OS command execution.  On a cloud-hosted
+# instance, that grants access to IAM credentials via the metadata endpoint.
+
+pattern:
+  name: "File upload web shell to cloud credential theft"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: unrestricted_file_upload
+  wstg: WSTG-BUSLOGIC-08
+
+pivot:
+  - type: infra_finding
+    check: ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+impact: >
+  An unrestricted file upload endpoint with no content-type or extension
+  validation allows uploading a server-side script to a web-accessible
+  directory.  Requesting the uploaded file executes arbitrary OS commands
+  as the web server process.  The attacker queries the IMDSv1 endpoint
+  to retrieve temporary IAM credentials for the attached instance role.
+  The overprivileged role provides broad AWS API access — enabling full
+  data exfiltration, IAM persistence creation, and lateral movement
+  from a single file upload request.
+
+remediation_priority:
+  - summary: "Validate file type server-side using magic bytes, not user-supplied Content-Type; store uploads outside the web root"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Serve uploaded files via a separate, isolated S3 bucket or CDN — never from the application server's filesystem"
+    effort: HIGH
+    breaks_chain: true
+    cli_command: |
+      # Pre-signed S3 upload — file never touches the app server
+      aws s3 presign s3://<BUCKET>/<KEY> --expires-in 300
+
+  - summary: "Enforce IMDSv2 to block IMDS queries from web shell level curl/wget"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required

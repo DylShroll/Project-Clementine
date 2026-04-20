@@ -1,0 +1,56 @@
+# Pattern: Insecure deserialization → RCE → cloud credential theft → lateral movement
+#
+# Deserialization of attacker-controlled data (Java serialisation, Python
+# pickle, PHP unserialize) grants arbitrary code execution.  On cloud-hosted
+# infrastructure, RCE immediately exposes IAM credentials via environment
+# variables or the IMDS endpoint.  Overprivileged roles convert single-host
+# RCE into full account compromise.
+
+pattern:
+  name: "Insecure deserialization to AWS account takeover"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: insecure_deserialization
+  wstg: WSTG-INPV-11
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+  - type: infra_finding
+    check: ec2-imdsv1-enabled
+    relationship: same_compute_resource
+
+impact: >
+  Insecure deserialization grants full remote code execution as the
+  application service account.  From this foothold the attacker reads
+  environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) or
+  queries the IMDSv1 endpoint to retrieve the temporary IAM credentials
+  of the attached instance role.  Because the role is overprivileged,
+  these credentials provide broad AWS API access — the attacker can
+  enumerate S3 buckets, read RDS snapshots, create IAM users for persistence,
+  or move laterally to other services within the account.
+
+remediation_priority:
+  - summary: "Replace insecure deserialization with safe alternatives — use JSON/Protobuf; never deserialise untrusted data with native language mechanisms"
+    effort: HIGH
+    breaks_chain: true
+
+  - summary: "Enforce IMDSv2 on all EC2 instances to require a session-token header, blocking credential theft via curl/wget"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws ec2 modify-instance-metadata-options \
+        --instance-id <INSTANCE_ID> \
+        --http-tokens required
+
+  - summary: "Apply least-privilege to the EC2 instance IAM role — limit permissions to exactly what the application requires"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Run the application process as a non-root user with no IAM role access to limit post-exploitation impact"
+    effort: MEDIUM
+    breaks_chain: false

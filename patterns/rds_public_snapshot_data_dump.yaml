@@ -1,0 +1,63 @@
+# Pattern: RDS public snapshot + no encryption → full database dump without authentication
+#
+# An RDS snapshot set to public visibility can be restored by any AWS account.
+# When the snapshot is unencrypted, the restored database is immediately
+# readable — no credentials required.  Missing RDS audit logging means the
+# sharing event and any restore operations are not visible to the owner.
+
+pattern:
+  name: "RDS public snapshot to unauthenticated data dump"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: rds-snapshot-public
+
+pivot:
+  - type: infra_finding
+    check: rds-no-encryption-at-rest
+    relationship: same_account
+
+  - type: infra_finding
+    check: rds-no-audit-logging
+    relationship: same_account
+
+impact: >
+  An RDS snapshot marked as public can be restored by any AWS account in any
+  region.  Because the snapshot is unencrypted, the restored database cluster
+  requires no decryption key — the attacker has immediate, full-read access
+  to all database contents.  This includes personally identifiable information,
+  authentication credentials, session tokens, and any other data present at the
+  time of the snapshot.  Absent RDS audit logging means the snapshot sharing
+  event may not be detected by the owning account until a breach notification
+  arrives externally.
+
+remediation_priority:
+  - summary: "Remove public visibility from all RDS snapshots immediately"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      aws rds modify-db-snapshot-attribute \
+        --db-snapshot-identifier <SNAPSHOT_ID> \
+        --attribute-name restore \
+        --values-to-remove all
+
+  - summary: "Enable encryption at rest on all RDS instances — encrypted snapshots cannot be restored without the KMS key"
+    effort: HIGH
+    breaks_chain: false
+    cli_command: |
+      # Snapshot, copy with encryption, restore from encrypted copy
+      aws rds create-db-snapshot \
+        --db-instance-identifier <DB_ID> \
+        --db-snapshot-identifier <SNAP_ID>
+      aws rds copy-db-snapshot \
+        --source-db-snapshot-identifier <SNAP_ID> \
+        --target-db-snapshot-identifier <ENC_SNAP_ID> \
+        --kms-key-id <KMS_KEY>
+
+  - summary: "Enable AWS Config rule rds-snapshots-public-prohibited to alert on future public snapshot creation"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws configservice put-config-rule \
+        --config-rule '{"ConfigRuleName":"rds-snapshots-public-prohibited","Source":{"Owner":"AWS","SourceIdentifier":"RDS_SNAPSHOTS_PUBLIC_PROHIBITED"}}'

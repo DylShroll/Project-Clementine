@@ -1,0 +1,47 @@
+# Pattern: NoSQL injection → authentication bypass → privileged data access
+#
+# NoSQL injection in a MongoDB or DynamoDB-backed authentication endpoint
+# allows bypassing password validation entirely using operator injection
+# ($ne, $gt, $regex).  Once authenticated as any or an admin user,
+# the attacker gains access to data that would otherwise require valid credentials.
+
+pattern:
+  name: "NoSQL injection authentication bypass"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: NoSQLi
+  wstg: WSTG-INPV-05
+
+pivot:
+  - type: app_finding
+    check: no-account-lockout
+    wstg: WSTG-ATHN-03
+    relationship: same_account
+
+  - type: infra_finding
+    check: rds-no-encryption-at-rest
+    relationship: same_account
+
+impact: >
+  NoSQL operator injection in the login endpoint (e.g., {"password":{"$ne":"x"}})
+  evaluates to true for all records — authenticating the attacker as the first
+  user in the collection, often an administrator.  Without account lockout,
+  the attacker can iterate operators without restriction.  Once authenticated,
+  the attacker accesses all data available to that user.  If the underlying
+  database is unencrypted, a subsequent data export or backup access requires
+  no additional key material — maximising the potential for data exfiltration.
+
+remediation_priority:
+  - summary: "Use parameterised queries or ODM/ORM schema validation — reject operator keys ($ne, $gt, $where) in user-supplied input"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Implement account lockout after repeated failed login attempts to block automated injection probing"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable encryption at rest on all databases to protect data if authentication is bypassed"
+    effort: HIGH
+    breaks_chain: false

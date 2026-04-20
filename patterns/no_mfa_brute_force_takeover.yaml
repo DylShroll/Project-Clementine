@@ -1,0 +1,55 @@
+# Pattern: No MFA on privileged accounts + no account lockout → brute force → account takeover
+#
+# Administrative or privileged accounts without MFA can be taken over through
+# credential stuffing or brute force.  The absence of account lockout removes
+# the primary rate-limiting control.  Overprivileged accounts mean any
+# successful login results in full application or AWS console access.
+
+pattern:
+  name: "Brute force to privileged account takeover"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: broken_authentication
+  wstg: WSTG-ATHN-03
+
+pivot:
+  - type: app_finding
+    check: no-account-lockout
+    wstg: WSTG-ATHN-03
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-root-no-mfa
+    relationship: same_account
+
+impact: >
+  The authentication endpoint has no rate limiting or account lockout,
+  allowing unlimited login attempts.  Combined with the absence of MFA on
+  privileged accounts, an attacker can run credential stuffing or dictionary
+  attacks until a valid password is found.  The AWS root account also lacks
+  MFA — if the application is used to manage AWS resources or if the same
+  password is reused, a successful brute-force results in full AWS console
+  access, including the ability to disable CloudTrail, modify IAM policies,
+  and exfiltrate all account data.
+
+remediation_priority:
+  - summary: "Enforce MFA on all privileged accounts and the AWS root account"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Enable virtual MFA for IAM user
+      aws iam enable-mfa-device \
+        --user-name <USER_NAME> \
+        --serial-number <MFA_SERIAL> \
+        --authentication-code1 <CODE1> \
+        --authentication-code2 <CODE2>
+
+  - summary: "Implement account lockout or exponential backoff after 5 failed login attempts"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Integrate with AWS Cognito or an IdP that provides built-in brute-force protection and MFA enforcement"
+    effort: HIGH
+    breaks_chain: false

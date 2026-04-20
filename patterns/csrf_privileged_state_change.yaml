@@ -1,0 +1,52 @@
+# Pattern: CSRF + no SameSite cookie + admin session → privileged state-changing action
+#
+# A CSRF vulnerability combined with session cookies lacking the SameSite
+# attribute allows cross-site requests to be authenticated by the victim's
+# browser.  When the victim is an administrator, any state-changing action
+# (user creation, permission grant, config change) can be triggered
+# silently by a malicious page.
+
+pattern:
+  name: "CSRF to privileged state change"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: CSRF
+  wstg: WSTG-SESS-05
+
+pivot:
+  - type: app_finding
+    check: cookie-missing-samesite
+    wstg: WSTG-SESS-02
+    relationship: same_account
+
+  - type: app_finding
+    check: missing-csrf-token
+    relationship: same_account
+
+impact: >
+  The session cookie is issued without the SameSite attribute, causing
+  browsers to include it in all cross-origin requests.  Combined with the
+  absence of CSRF tokens on state-changing endpoints, an attacker can craft
+  an HTML page that silently submits a privileged request (e.g., promote
+  attacker account to admin, change email address, disable MFA) when visited
+  by an authenticated administrator.  The administrator's session cookie is
+  automatically attached by the browser — no phishing of credentials is required.
+
+remediation_priority:
+  - summary: "Set SameSite=Strict (or Lax) on all session cookies — single flag that prevents cross-site cookie inclusion"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Django: SESSION_COOKIE_SAMESITE = 'Strict'
+      # Flask: app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
+      # Express: res.cookie('session', value, { sameSite: 'strict' })
+
+  - summary: "Implement synchronised CSRF tokens (double-submit cookie or server-side token) on all state-changing endpoints"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Validate the Origin/Referer header on state-changing requests as a secondary defence"
+    effort: LOW
+    breaks_chain: false

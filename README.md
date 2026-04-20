@@ -17,6 +17,7 @@ Project Clementine runs five sequential phases:
 | 1 — Recon | Crawls endpoints, fingerprints tech stack, maps AWS resources from response headers |
 | 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised |
 | 3 — App Test | Full OWASP WSTG test suite via AutoPentest AI; Playwright validates DOM-based findings |
+| 3.5 — AI Triage | Claude scores each finding: confidence, false-positive flag, and rationale. Skipped when `ANTHROPIC_API_KEY` is unset |
 | 4 — Correlation | Pattern engine fuses app + infra findings into compound attack chains |
 | 5 — Reporting | HTML, JSON, SARIF, Markdown, and optional AWS Security Hub push |
 
@@ -32,6 +33,7 @@ Project Clementine runs five sequential phases:
 | `uv` / `uvx` | cloud-audit and Prowler MCP servers | `pip install uv` |
 | AWS CLI | Configured profile with read-only audit permissions | `pip install awscli` |
 | Prowler CLI | Compliance scanning (optional — gracefully skipped if absent) | `pip install prowler` |
+| Anthropic API key | AI triage and novel-chain discovery (optional) | Set `ANTHROPIC_API_KEY` env var |
 
 ### AWS audit permissions
 
@@ -68,7 +70,7 @@ clementine --version
 ### Pull the AutoPentest AI Docker image
 
 ```bash
-docker pull bhavsec/autopentest-tools:latest
+docker pull dylshroll/autopentest-tools:latest
 
 # Start the container (keep it running in the background)
 docker run -d --name autopentest-tools dylshroll/autopentest-tools:latest tail -f /dev/null
@@ -280,16 +282,64 @@ Set `finding_db: "postgresql://clementine:${DB_PASSWORD}@db:5432/clementine"` in
 
 ## Attack pattern library
 
-Compound attack patterns live in `patterns/` as YAML files. The six built-in patterns are:
+Compound attack patterns live in `patterns/` as YAML files. 32 built-in patterns span injection, authentication, cloud infrastructure, supply chain, and client-side attack classes:
+
+### Injection
 
 | Pattern | Entry | Severity |
 |---|---|---|
 | `ssrf_imds_iam.yaml` | SSRF → IMDSv1 → overprivileged IAM role | CRITICAL |
+| `xxe_ssrf_internal_pivot.yaml` | XXE → SSRF to IMDS + internal services | CRITICAL |
+| `ssti_rce_credential_theft.yaml` | SSTI → RCE → IMDS IAM credential theft | CRITICAL |
+| `cmd_injection_imds_credential_theft.yaml` | OS command injection → IMDSv1 → CloudTrail-blind account access | CRITICAL |
+| `insecure_deserialization_rce_pivot.yaml` | Insecure deserialization → RCE → cloud credential theft | CRITICAL |
+| `unrestricted_file_upload_rce.yaml` | Web shell upload → RCE → IMDS credential theft | CRITICAL |
+| `log4shell_rce_imds_chain.yaml` | Expression-language injection → RCE → GuardDuty-blind account takeover | CRITICAL |
 | `sqli_rds_exfil.yaml` | SQLi → unencrypted RDS → no audit logging | CRITICAL |
+| `nosqli_auth_bypass_data_access.yaml` | NoSQLi operator injection → auth bypass → unencrypted data access | HIGH |
+
+### Authentication & Session
+
+| Pattern | Entry | Severity |
+|---|---|---|
+| `jwt_weak_secret_privilege_escalation.yaml` | Weak JWT secret → forged admin token → privilege escalation | CRITICAL |
 | `exposed_secrets_lateral.yaml` | Hardcoded creds → stale IAM key → lateral movement | CRITICAL |
+| `path_traversal_source_secrets.yaml` | Path traversal → config/source read → stale IAM key | CRITICAL |
+| `oauth_open_redirect_token_theft.yaml` | Open redirect → auth code interception → persistent token | HIGH |
 | `xss_session_hijack.yaml` | XSS → missing HttpOnly → admin session theft | HIGH |
-| `open_sg_ssrf_pivot.yaml` | Open security group → public EC2 → SSRF pivot | HIGH |
-| `missing_logging_blind_exploit.yaml` | No CloudTrail + no GuardDuty + no Config | HIGH |
+| `no_mfa_brute_force_takeover.yaml` | No MFA + no account lockout → brute force → root/admin takeover | HIGH |
+| `subdomain_takeover_session_theft.yaml` | Dangling CNAME → subdomain takeover → session cookie theft | HIGH |
+| `csrf_privileged_state_change.yaml` | CSRF + no SameSite cookie → admin state-changing action | HIGH |
+
+### Authorisation & Access Control
+
+| Pattern | Entry | Severity |
+|---|---|---|
+| `broken_function_level_auth_rce.yaml` | BFLA → admin endpoint → RCE → cloud credentials | CRITICAL |
+| `graphql_introspection_idor.yaml` | GraphQL schema exposure + BOLA → automated bulk data extraction | HIGH |
+| `idor_bulk_pii_harvest.yaml` | IDOR + no rate limit + plaintext transport → mass PII dump | HIGH |
+
+### AWS Infrastructure
+
+| Pattern | Entry | Severity |
+|---|---|---|
+| `cognito_unauth_role_escalation.yaml` | Cognito guest identity → overprivileged role → direct AWS API access | CRITICAL |
+| `iam_trust_policy_too_broad.yaml` | Wildcard trust policy → any credential assumes privileged role | CRITICAL |
+| `cloudformation_iam_privilege_escalation.yaml` | CFn stack role + iam:PassRole → template-triggered admin escalation | CRITICAL |
+| `ecs_task_escape_overprivileged_role.yaml` | Privileged ECS container → host escape → IMDS → account compromise | CRITICAL |
+| `lambda_env_secrets_exposed.yaml` | Lambda env var secrets + overprivileged role → account compromise | CRITICAL |
+| `rds_public_snapshot_data_dump.yaml` | Public RDS snapshot + no encryption → unauthenticated database dump | CRITICAL |
+| `ecr_public_image_secrets.yaml` | Public ECR image + embedded secrets + no scanning | CRITICAL |
+| `ssm_parameter_store_ssrf_exfil.yaml` | SSRF + SSM GetParameter over-privilege → plaintext secret exfil | CRITICAL |
+| `s3_public_bucket_sensitive_data.yaml` | Public S3 bucket + no MFA delete + no access logging | HIGH |
+| `open_sg_ssrf_pivot.yaml` | Open security group → public EC2 → SSRF internal pivot | HIGH |
+| `missing_logging_blind_exploit.yaml` | No CloudTrail + no GuardDuty + no Config → blind exploitation | HIGH |
+
+### Supply Chain
+
+| Pattern | Entry | Severity |
+|---|---|---|
+| `ci_oidc_misconfiguration_supply_chain.yaml` | OIDC trust too broad → any repo assumes role → artefact poisoning | CRITICAL |
 
 ### Adding a custom pattern
 

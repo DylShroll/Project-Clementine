@@ -1,0 +1,56 @@
+# Pattern: Dangling DNS CNAME → subdomain takeover → session/cookie theft
+#
+# A DNS CNAME record pointing to a decommissioned cloud service (S3, GitHub
+# Pages, Elastic Beanstalk, etc.) can be claimed by an attacker by registering
+# the same resource name on the target platform.  If cookies are scoped to the
+# parent domain and HSTS is not enforced, the attacker-controlled subdomain
+# can receive session cookies from authenticated users.
+
+pattern:
+  name: "Subdomain takeover to session theft"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: subdomain_takeover
+  wstg: WSTG-INFO-02
+
+pivot:
+  - type: app_finding
+    check: cookie-missing-domain-scope
+    wstg: WSTG-SESS-02
+    relationship: same_account
+
+  - type: app_finding
+    check: no-hsts-header
+    wstg: WSTG-CONF-07
+    relationship: same_account
+
+impact: >
+  The dangling CNAME allows the attacker to host arbitrary content on the
+  subdomain.  Because session cookies are scoped to the parent domain
+  (domain=.example.com) they are transmitted to all subdomains, including
+  the attacker-controlled one.  Without HSTS the browser will make plain
+  HTTP requests to the taken-over subdomain, delivering the cookie in
+  cleartext.  Any user who visits a page that loads a resource from the
+  subdomain (e.g., an iframe, script tag, or redirect) sends their session
+  cookie to the attacker — enabling full session hijack without any
+  interaction beyond visiting the legitimate site.
+
+remediation_priority:
+  - summary: "Remove or update the dangling DNS CNAME record — either delete it or point it to an active, controlled resource"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # List Route 53 records to identify dangling entries
+      aws route53 list-resource-record-sets \
+        --hosted-zone-id <ZONE_ID> \
+        --query "ResourceRecordSets[?Type=='CNAME']"
+
+  - summary: "Scope session cookies to the exact application domain, not the parent domain — remove the leading dot"
+    effort: LOW
+    breaks_chain: false
+
+  - summary: "Enforce HSTS with includeSubDomains to prevent HTTP downgrade attacks on all subdomains"
+    effort: LOW
+    breaks_chain: false

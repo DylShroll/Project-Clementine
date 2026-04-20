@@ -1,0 +1,64 @@
+# Pattern: CloudFormation stack with overprivileged role → IAM privilege escalation via template
+#
+# A CloudFormation stack execution role with iam:PassRole and broad
+# resource permissions allows any user who can call cloudformation:CreateStack
+# to escalate privileges.  By submitting a template that creates an IAM
+# role with AdministratorAccess and then assumes it, an attacker escalates
+# from CloudFormation deployment rights to full account admin.
+
+pattern:
+  name: "CloudFormation IAM privilege escalation"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: cloudformation-stack-role-overprivileged
+
+pivot:
+  - type: infra_finding
+    check: iam-passrole-unrestricted
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-no-permission-boundaries
+    relationship: same_account
+
+impact: >
+  The CloudFormation execution role carries iam:PassRole and broad IAM write
+  permissions with no resource restriction.  Any IAM principal permitted to
+  call cloudformation:CreateStack or cloudformation:UpdateStack can submit a
+  template that creates a new IAM role with AdministratorAccess, passes it to
+  a resource, and uses it to assume full admin.  Because no permission
+  boundaries constrain the created role, this is a one-step privilege
+  escalation from any deployment-capable principal to account administrator.
+
+remediation_priority:
+  - summary: "Restrict the CloudFormation execution role to only the IAM actions and resources required for each stack's declared resources"
+    effort: MEDIUM
+    breaks_chain: true
+    iac_snippet: |
+      # Deny iam:CreateRole unless the role name matches a known prefix
+      {
+        "Effect": "Deny",
+        "Action": "iam:CreateRole",
+        "Resource": "*",
+        "Condition": {
+          "StringNotLike": {
+            "iam:RoleName": "app-role-*"
+          }
+        }
+      }
+
+  - summary: "Scope iam:PassRole to specific role ARNs — never allow wildcard resource on PassRole"
+    effort: LOW
+    breaks_chain: false
+
+  - summary: "Attach permission boundaries to all IAM roles created via CloudFormation to cap maximum effective permissions"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Enable CloudFormation drift detection and AWS Config rule cfn-stack-notification-check to alert on unexpected stack changes"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws cloudformation detect-stack-drift --stack-name <STACK_NAME>

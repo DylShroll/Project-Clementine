@@ -1,0 +1,48 @@
+# Pattern: Broken function-level auth → admin API access → RCE via admin functionality
+#
+# Unenforced function-level authorisation exposes privileged admin endpoints
+# to any authenticated user.  Admin-only functions (debug console, code
+# execution endpoints, file upload to code directory, dependency management)
+# frequently enable remote code execution when reached by an attacker.
+# An overprivileged server role converts that RCE into cloud account access.
+
+pattern:
+  name: "Broken function-level auth to admin RCE"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: broken_access_control
+  wstg: WSTG-ATHZ-02
+
+pivot:
+  - type: app_finding
+    check: admin-functionality-exposed
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_compute_resource
+
+impact: >
+  Broken function-level authorisation allows a low-privilege authenticated
+  user to invoke admin-only API endpoints.  Admin functionality commonly
+  includes debug shells, arbitrary file upload to web-root, command execution
+  endpoints, or dependency management — all of which enable remote code
+  execution.  Once RCE is achieved on an EC2-hosted application, the attacker
+  reads IAM credentials from the IMDS or environment.  The overprivileged
+  instance role converts single-host code execution into full AWS account
+  access.
+
+remediation_priority:
+  - summary: "Enforce server-side role checks on every admin endpoint — reject requests from non-admin roles with HTTP 403"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Remove or network-isolate admin/debug endpoints from the public-facing application; require VPN or IP allowlisting"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Apply least-privilege to the EC2 instance IAM role to limit post-exploitation blast radius"
+    effort: MEDIUM
+    breaks_chain: false

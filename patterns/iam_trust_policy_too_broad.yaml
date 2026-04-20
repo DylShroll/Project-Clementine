@@ -1,0 +1,56 @@
+# Pattern: Overly broad IAM trust policy → cross-account role assumption → privilege escalation
+#
+# An IAM role with a trust policy that allows assumption by any principal
+# in the account (or worse, any AWS principal) can be assumed by an attacker
+# who has obtained any valid credential in that account.  Absent SCPs or
+# permission boundaries, this allows unconstrained privilege escalation
+# to the full permissions of the trusted role.
+
+pattern:
+  name: "IAM trust policy abuse to privilege escalation"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: iam-role-trust-policy-too-permissive
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_account
+
+  - type: infra_finding
+    check: iam-no-permission-boundaries
+    relationship: same_account
+
+impact: >
+  The IAM role trust policy allows any principal in the account (or uses a
+  wildcard principal) to call sts:AssumeRole.  An attacker who has compromised
+  any credential in the account — even a low-privilege user — can assume this
+  role and inherit its permissions.  Because no permission boundaries are
+  enforced, the attacker gains the full set of permissions attached to the
+  trusted role.  If the role has AdministratorAccess or broad write
+  permissions, this constitutes full account compromise from a single
+  low-severity credential exposure.
+
+remediation_priority:
+  - summary: "Restrict the trust policy Principal to the specific AWS account, service, or user that legitimately needs to assume the role"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Replace '*' principal with specific account or role ARN
+      aws iam update-assume-role-policy \
+        --role-name <ROLE_NAME> \
+        --policy-document file://restricted-trust-policy.json
+
+  - summary: "Add IAM permission boundaries to high-privilege roles to cap the maximum effective permissions"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      aws iam put-role-permissions-boundary \
+        --role-name <ROLE_NAME> \
+        --permissions-boundary <BOUNDARY_POLICY_ARN>
+
+  - summary: "Enable AWS Organizations Service Control Policies to restrict sts:AssumeRole actions account-wide"
+    effort: MEDIUM
+    breaks_chain: false
