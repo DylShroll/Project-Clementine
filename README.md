@@ -2,6 +2,8 @@
 
 Automated web-app penetration-testing orchestrator. Coordinates six security MCP servers to deliver assessments that span both application-layer vulnerabilities (OWASP WSTG) and AWS infrastructure misconfigurations — then automatically correlates them into compound attack chains that neither layer of tooling can find on its own.
 
+The engine builds a **NetworkX-backed AWS knowledge graph** during each assessment, enabling multi-hop attack path traversal, blast radius calculation, and a visual attack surface map in the HTML report.
+
 ```
 SSRF (medium)  +  IMDSv1 enabled  +  overprivileged IAM role  =  full account takeover (critical)
 ```
@@ -13,20 +15,44 @@ SSRF (medium)  +  IMDSv1 enabled  +  overprivileged IAM role  =  full account ta
 Project Clementine runs five sequential phases:
 
 | Phase | What happens |
-|---|---|
+| --- | --- |
 | 1 — Recon | Crawls endpoints, fingerprints tech stack, maps AWS resources from response headers |
-| 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised |
+| 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised. Builds the AWS knowledge graph: principals, compute, storage, and network nodes with IAM trust and permission edges |
 | 3 — App Test | Full OWASP WSTG test suite via AutoPentest AI; Playwright validates DOM-based findings |
 | 3.5 — AI Triage | Claude scores each finding: confidence, false-positive flag, and rationale. Skipped when `ANTHROPIC_API_KEY` is unset |
-| 4 — Correlation | Pattern engine fuses app + infra findings into compound attack chains |
-| 5 — Reporting | HTML, JSON, SARIF, Markdown, and optional AWS Security Hub push |
+| 4 — Correlation | Rule-based pattern engine (46 patterns) fuses app + infra findings into compound attack chains using multi-hop graph traversal. Bridges web-app SSRF findings into the AWS graph. Optional AI chain discovery proposes novel paths |
+| 5 — Reporting | HTML (with interactive Attack Graph), JSON, SARIF, Markdown, and optional AWS Security Hub push |
+
+---
+
+## AWS Knowledge Graph
+
+Phase 2 constructs a directed graph `G = (V, E)` over the AWS environment:
+
+**Nodes (V)** — IAM users and roles, EC2 instances, EKS pods and nodes, Lambda functions, S3 buckets, RDS instances, Secrets Manager secrets, SSM parameters, VPCs, security groups, VPC endpoints, IMDS (`169.254.169.254`), and web endpoints from AutoPentest AI.
+
+**Edges (E)** — IAM trust relationships (`CAN_ASSUME`), permission grants (`HAS_PERMISSION`, `CAN_PASS_ROLE`), compute attachments (`ATTACHED_TO`, `HOSTS_APP`), network topology (`ROUTES_TO`, `INTERNET_FACING`), exploit paths (`SSRF_REACHABLE`), and EKS IRSA bindings (`IRSA_BOUND`, `OIDC_TRUSTS`).
+
+The graph persists across phases. Phase 4 reconstructs it from the database and bridges SSRF findings from the application layer as `SSRF_REACHABLE` edges into the IMDS node. The correlation engine uses multi-hop graph traversal (up to 4 hops by default) instead of the previous single-hop adjacency check — allowing patterns like `web endpoint → EC2 → IAM role → S3` to be detected automatically.
+
+The HTML report includes an **Attack Graph** tab with a force-directed canvas renderer:
+
+- Purple nodes — IAM principals (roles, users, EKS service accounts)
+- Blue nodes — Compute (EC2, EKS pods/nodes)
+- Green nodes — Storage (S3, RDS, Secrets Manager, SSM)
+- Amber nodes — Lambda functions
+- Red nodes — Web endpoints and IMDS
+- Teal nodes — Network (VPC, security groups)
+- Dashed red edges — Exploit paths (SSRF reachable, internet-facing)
+
+Nodes are colour-bordered by the severity of their linked findings. Drag to pan. The graph is omitted from the report when no graph nodes exist in the database.
 
 ---
 
 ## Prerequisites
 
 | Tool | Purpose | Install |
-|---|---|---|
+| --- | --- | --- |
 | Python ≥ 3.11 | Runtime | [python.org](https://python.org) |
 | Docker | AutoPentest AI security tools container | [docker.com](https://docker.com) |
 | Node.js ≥ 18 | Playwright MCP server | [nodejs.org](https://nodejs.org) |
@@ -152,7 +178,7 @@ clementine run --config clementine.yaml
 
 Reports are written to `./reports/` by default:
 
-- `reports/report.html` — interactive HTML with severity filtering
+- `reports/report.html` — interactive HTML with severity filtering, attack chain step-flow, remediation playbook, and Attack Graph visualisation
 - `reports/report.json` — machine-readable JSON
 - `reports/report.sarif` — for IDE and CI/CD consumption
 - `reports/report.md` — for Git repository integration
@@ -283,12 +309,12 @@ Set `finding_db: "postgresql://clementine:${DB_PASSWORD}@db:5432/clementine"` in
 
 ## Attack pattern library
 
-Compound attack patterns live in `patterns/` as YAML files. 32 built-in patterns span injection, authentication, cloud infrastructure, supply chain, and client-side attack classes:
+Compound attack patterns live in `patterns/` as YAML files. 46 built-in patterns span injection, authentication, cloud infrastructure, privilege escalation, supply chain, and client-side attack classes. All patterns use the same rule format and are auto-discovered at startup — no code changes needed to add or remove them.
 
 ### Injection
 
 | Pattern | Entry | Severity |
-|---|---|---|
+| --- | --- | --- |
 | `ssrf_imds_iam.yaml` | SSRF → IMDSv1 → overprivileged IAM role | CRITICAL |
 | `xxe_ssrf_internal_pivot.yaml` | XXE → SSRF to IMDS + internal services | CRITICAL |
 | `ssti_rce_credential_theft.yaml` | SSTI → RCE → IMDS IAM credential theft | CRITICAL |
@@ -315,7 +341,7 @@ Compound attack patterns live in `patterns/` as YAML files. 32 built-in patterns
 ### Authorisation & Access Control
 
 | Pattern | Entry | Severity |
-|---|---|---|
+| --- | --- | --- |
 | `broken_function_level_auth_rce.yaml` | BFLA → admin endpoint → RCE → cloud credentials | CRITICAL |
 | `graphql_introspection_idor.yaml` | GraphQL schema exposure + BOLA → automated bulk data extraction | HIGH |
 | `idor_bulk_pii_harvest.yaml` | IDOR + no rate limit + plaintext transport → mass PII dump | HIGH |
@@ -323,7 +349,7 @@ Compound attack patterns live in `patterns/` as YAML files. 32 built-in patterns
 ### AWS Infrastructure
 
 | Pattern | Entry | Severity |
-|---|---|---|
+| --- | --- | --- |
 | `cognito_unauth_role_escalation.yaml` | Cognito guest identity → overprivileged role → direct AWS API access | CRITICAL |
 | `iam_trust_policy_too_broad.yaml` | Wildcard trust policy → any credential assumes privileged role | CRITICAL |
 | `cloudformation_iam_privilege_escalation.yaml` | CFn stack role + iam:PassRole → template-triggered admin escalation | CRITICAL |
@@ -335,6 +361,16 @@ Compound attack patterns live in `patterns/` as YAML files. 32 built-in patterns
 | `s3_public_bucket_sensitive_data.yaml` | Public S3 bucket + no MFA delete + no access logging | HIGH |
 | `open_sg_ssrf_pivot.yaml` | Open security group → public EC2 → SSRF internal pivot | HIGH |
 | `missing_logging_blind_exploit.yaml` | No CloudTrail + no GuardDuty + no Config → blind exploitation | HIGH |
+
+### Privilege Escalation
+
+| Pattern | Entry | Severity |
+| --- | --- | --- |
+| `lambda_backdoor_privilege_escalation.yaml` | Excessive Lambda permissions + iam:PassRole → code execution under privileged role | HIGH |
+| `iam_policy_rollback_privilege_escalation.yaml` | iam:SetDefaultPolicyVersion + stale permissive policy versions → self-escalation without new resources | HIGH |
+| `glue_dev_endpoint_privilege_escalation.yaml` | glue:CreateDevEndpoint + iam:PassRole → arbitrary code under any passable role | HIGH |
+| `eks_hostnetwork_imds_credential_theft.yaml` | EKS pod hostNetwork:true + IMDSv1 + overprivileged node role → IMDS credential theft | CRITICAL |
+| `eks_irsa_oidc_trust_too_broad.yaml` | IRSA OIDC trust wildcard → any pod assumes overprivileged IAM role | HIGH |
 
 ### Supply Chain
 
@@ -382,7 +418,7 @@ Restart the tool — the new pattern is picked up automatically.
 ## Configuration reference
 
 | Key | Default | Description |
-|---|---|---|
+ | --- | --- | --- |
 | `target.url` | required | Primary URL to assess |
 | `target.scope.include_domains` | required | Domains in scope (subdomains included) |
 | `target.scope.exclude_paths` | `[]` | URL path prefixes to never touch |
@@ -403,7 +439,7 @@ Restart the tool — the new pattern is picked up automatically.
 ## MCP servers
 
 | Server | Transport | Required | Purpose |
-|---|---|---|---|
+ | --- | --- | --- | --- |
 | AutoPentest AI | stdio (Docker) | Yes | OWASP WSTG application testing |
 | cloud-audit | stdio (`uvx`) | Yes | AWS configuration scanning |
 | Prowler | stdio (`uvx`) | No | Compliance framework mapping |
@@ -447,9 +483,9 @@ clementine run --config clementine.yaml
 
 ## Things I want to do with the project
 
-- Knowledge-graph w/ embeddings model for better attack surface cognition and novel exploit chain development
-- GUI?
+- Embeddings model layer on top of the knowledge graph for semantic similarity search and novel exploit chain suggestion
+- GUI / web dashboard for live assessment monitoring
 - Azure, GCP integrations
-- IaC Scanning
-- additional correlation patterns based on common exploit paths
-- increase sleep time on clementine.mcp_client failures during rate limit errors
+- IaC scanning (Terraform, CloudFormation, CDK)
+- Additional correlation patterns based on emerging exploit paths
+- Increase backoff time on `clementine.mcp_client` failures during rate-limit errors

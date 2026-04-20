@@ -1,0 +1,58 @@
+# Pattern: Lambda backdoor → IAM privilege escalation
+#
+# An attacker with excessive Lambda permissions (create/update function code)
+# can inject malicious code into a Lambda that executes under a privileged role,
+# or use iam:PassRole to bind an overprivileged role to a new Lambda and invoke it.
+
+pattern:
+  name: "Lambda backdoor privilege escalation"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: iam-excessive-lambda-permissions
+
+pivot:
+  - type: infra_finding
+    check: iam-passrole-permissive
+    relationship: same_account
+
+  - type: infra_finding
+    check: lambda-invoke-function-unrestricted
+    relationship: same_account
+
+impact: >
+  An attacker with lambda:CreateFunction / lambda:UpdateFunctionCode and iam:PassRole
+  can create or modify a Lambda function bound to a privileged IAM role, then invoke it
+  to execute arbitrary AWS API calls under that role's permissions. This allows full
+  privilege escalation without touching the IAM policies themselves.
+
+remediation_priority:
+  - summary: "Remove iam:PassRole from developer/CI IAM policies unless explicitly required (breaks the chain — attacker cannot bind a privileged role to their Lambda)"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Audit which identities have iam:PassRole
+      aws iam get-account-authorization-details \
+        --filter LocalManagedPolicy AWSManagedPolicy \
+        --query 'Policies[*].PolicyVersionList[?IsDefaultVersion].Document' \
+        --output json | grep -A2 PassRole
+
+  - summary: "Scope lambda:CreateFunction and lambda:UpdateFunctionCode to specific resource ARN patterns"
+    effort: MEDIUM
+    breaks_chain: false
+    iac_snippet: |
+      {
+        "Effect": "Allow",
+        "Action": ["lambda:UpdateFunctionCode"],
+        "Resource": "arn:aws:lambda:*:*:function:myapp-*"
+      }
+
+  - summary: "Restrict Lambda resource-based policies to prevent unrestricted invocation from external principals"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      # Remove overly-broad resource-based policy
+      aws lambda remove-permission \
+        --function-name <FUNCTION_NAME> \
+        --statement-id <STATEMENT_ID>

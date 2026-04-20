@@ -74,6 +74,15 @@ class GraphRelationship(str, Enum):
     ATTACHED_TO = "attached_to"
     HAS_ACCESS_TO = "has_access_to"
     MEMBER_OF = "member_of"
+    # Knowledge graph edge types
+    CAN_ASSUME = "CAN_ASSUME"
+    HAS_PERMISSION = "HAS_PERMISSION"
+    CAN_PASS_ROLE = "CAN_PASS_ROLE"
+    INTERNET_FACING = "INTERNET_FACING"
+    SSRF_REACHABLE = "SSRF_REACHABLE"
+    HOSTS_APP = "HOSTS_APP"
+    IRSA_BOUND = "IRSA_BOUND"
+    OIDC_TRUSTS = "OIDC_TRUSTS"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +242,16 @@ CREATE TABLE IF NOT EXISTS resource_graph (
 CREATE TABLE IF NOT EXISTS assessment_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Persistent node registry for the AWS knowledge graph.
+-- Rebuilt into an in-memory NetworkX graph at Phase 4 correlation time.
+CREATE TABLE IF NOT EXISTS graph_nodes (
+    node_id         TEXT PRIMARY KEY,
+    node_type       TEXT NOT NULL,
+    label           TEXT NOT NULL,
+    properties      TEXT,           -- JSON blob (must include finding_ids list)
+    internet_facing INTEGER DEFAULT 0
 );
 """
 
@@ -583,6 +602,59 @@ class FindingsDB:
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_finding(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Knowledge graph nodes
+    # ------------------------------------------------------------------
+
+    async def upsert_graph_node(
+        self,
+        node_id: str,
+        node_type: str,
+        label: str,
+        properties: dict,
+        is_internet_facing: bool = False,
+    ) -> None:
+        """Persist a graph node; merges properties on conflict."""
+        props_json = json.dumps(properties)
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT INTO graph_nodes (node_id, node_type, label, properties, internet_facing)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    label = excluded.label,
+                    node_type = excluded.node_type,
+                    properties = excluded.properties,
+                    internet_facing = MAX(internet_facing, excluded.internet_facing)
+                """,
+                (node_id, node_type, label[:500], props_json, int(is_internet_facing)),
+            )
+            await self._conn.commit()
+
+    async def get_graph_nodes(self) -> list:
+        """Return all persisted graph nodes as GraphNode objects."""
+        from .graph.model import AWSNodeType, GraphNode  # local import avoids cycles
+        async with self._conn.execute(
+            "SELECT node_id, node_type, label, properties, internet_facing FROM graph_nodes"
+        ) as cur:
+            rows = await cur.fetchall()
+
+        nodes = []
+        for row in rows:
+            try:
+                ntype = AWSNodeType(row["node_type"])
+            except ValueError:
+                ntype = AWSNodeType.EC2_INSTANCE  # safe fallback
+            props = json.loads(row["properties"]) if row["properties"] else {}
+            nodes.append(GraphNode(
+                node_id=row["node_id"],
+                node_type=ntype,
+                label=row["label"],
+                properties=props,
+                is_internet_facing=bool(row["internet_facing"]),
+            ))
+        return nodes
 
 
 # ---------------------------------------------------------------------------

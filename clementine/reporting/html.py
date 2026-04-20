@@ -17,6 +17,7 @@ Vanilla CSS/JS only; no CDN resources.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -219,6 +220,15 @@ pre.code{background:var(--c-code-bg);color:var(--c-code-text);padding:.875rem 1r
 .comp-table th{padding:.55rem .875rem;text-align:left;background:#f1f5f9;border-bottom:2px solid var(--c-border);font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted)}
 .comp-table td{padding:.55rem .875rem;border-bottom:1px solid #f1f5f9}
 
+/* ── Attack Graph ── */
+.graph-canvas-wrap{background:#0f172a;border-radius:.5rem;overflow:hidden;position:relative}
+#cy-canvas{display:block;width:100%;height:520px;cursor:grab}
+#cy-canvas:active{cursor:grabbing}
+.graph-legend{display:flex;flex-wrap:wrap;gap:.5rem 1rem;margin-top:.875rem;font-size:.75rem;color:var(--c-muted)}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:.35rem;vertical-align:middle}
+.legend-line{display:inline-block;width:18px;height:2px;margin-right:.35rem;vertical-align:middle}
+.legend-dashed{background:repeating-linear-gradient(90deg,#dc2626 0 5px,transparent 5px 8px)}
+
 /* ── Responsive ── */
 @media(max-width:900px){
   .layout{grid-template-columns:1fr}
@@ -255,6 +265,9 @@ pre.code{background:var(--c-code-bg);color:var(--c-code-text);padding:.875rem 1r
   <a class="nav-item" href="#playbook">Remediation Playbook</a>
   {% if compliance_rows %}
   <a class="nav-item" href="#compliance">Compliance</a>
+  {% endif %}
+  {% if graph_json != '{}' %}
+  <a class="nav-item" href="#attack-graph">Attack Graph</a>
   {% endif %}
   <div class="sidebar-footer">
     {{ generated_at }}<br>
@@ -581,6 +594,31 @@ pre.code{background:var(--c-code-bg);color:var(--c-code-text);padding:.875rem 1r
 </section>
 {% endif %}
 
+{% if graph_json != '{}' %}
+<!-- ── Attack Graph ── -->
+<section class="section" id="attack-graph">
+  <div class="section-title">Attack Graph</div>
+  <div class="card card-pad">
+    <div style="font-size:.8125rem;color:var(--c-muted);margin-bottom:.875rem">
+      Multi-hop attack surface — nodes represent AWS resources and principals; edges represent permissions, trust relationships, and exploit paths.
+      Drag to pan. Nodes settle after the force simulation converges.
+    </div>
+    <div class="graph-canvas-wrap">
+      <canvas id="cy-canvas"></canvas>
+    </div>
+    <div class="graph-legend">
+      <span><span class="legend-dot" style="background:#7c3aed"></span>IAM / Principal</span>
+      <span><span class="legend-dot" style="background:#2563eb"></span>Compute (EC2 / EKS)</span>
+      <span><span class="legend-dot" style="background:#16a34a"></span>Storage / Secrets</span>
+      <span><span class="legend-dot" style="background:#d97706"></span>Lambda</span>
+      <span><span class="legend-dot" style="background:#dc2626"></span>Web / IMDS</span>
+      <span><span class="legend-dot" style="background:#0891b2"></span>Network</span>
+      <span><span class="legend-line legend-dashed"></span>Exploit path (SSRF / Internet)</span>
+    </div>
+  </div>
+</section>
+{% endif %}
+
 </div><!-- /main -->
 </div><!-- /layout -->
 
@@ -634,8 +672,136 @@ function copyPre(btn) {
   });
 }
 
+// ── Attack Graph renderer ──
+{% if graph_json != '{}' %}
+(function() {
+  const _gdata = {{ graph_json | safe }};
+  const _gnodes = (_gdata.elements.nodes || []).map(function(n) {
+    return Object.assign({}, n.data, {vx:0, vy:0, x:0, y:0, pinned:false});
+  });
+  const _gedges = (_gdata.elements.edges || []).map(function(e) { return e.data; });
+  const _gmap = {};
+  _gnodes.forEach(function(n) { _gmap[n.id] = n; });
+
+  const _canvas = document.getElementById('cy-canvas');
+  if (!_canvas || !_gnodes.length) return;
+  const _ctx = _canvas.getContext('2d');
+
+  function _sz() {
+    _canvas.width = _canvas.offsetWidth;
+    _canvas.height = _canvas.offsetHeight;
+  }
+  _sz();
+  window.addEventListener('resize', function() { _sz(); _initPos(); });
+
+  function _initPos() {
+    const W = _canvas.width, H = _canvas.height, total = _gnodes.length;
+    _gnodes.forEach(function(n, i) {
+      const angle = 2 * Math.PI * i / Math.max(total, 1);
+      const r = Math.min(W, H) * 0.32;
+      n.x = W / 2 + r * Math.cos(angle);
+      n.y = H / 2 + r * Math.sin(angle);
+      n.vx = 0; n.vy = 0;
+    });
+    _tick = 0;
+  }
+  _initPos();
+
+  const _K = 90, _DAMP = 0.82;
+  let _tick = 0;
+
+  function _simulate() {
+    if (_tick > 400) return;
+    _tick++;
+    const W = _canvas.width, H = _canvas.height;
+    // Repulsion
+    for (let i = 0; i < _gnodes.length; i++) {
+      for (let j = i + 1; j < _gnodes.length; j++) {
+        const dx = _gnodes[j].x - _gnodes[i].x || 0.1;
+        const dy = _gnodes[j].y - _gnodes[i].y || 0.1;
+        const d = Math.sqrt(dx*dx + dy*dy) || 1;
+        const f = _K * _K / d;
+        const fx = f * dx / d, fy = f * dy / d;
+        _gnodes[i].vx -= fx; _gnodes[i].vy -= fy;
+        _gnodes[j].vx += fx; _gnodes[j].vy += fy;
+      }
+    }
+    // Attraction along edges
+    _gedges.forEach(function(e) {
+      const s = _gmap[e.source], t = _gmap[e.target];
+      if (!s || !t) return;
+      const dx = t.x - s.x, dy = t.y - s.y;
+      const d = Math.sqrt(dx*dx + dy*dy) || 1;
+      const f = (d - _K) / d * 0.12;
+      s.vx += f*dx; s.vy += f*dy;
+      t.vx -= f*dx; t.vy -= f*dy;
+    });
+    // Centre gravity + integrate
+    _gnodes.forEach(function(n) {
+      if (n.pinned) return;
+      n.vx += (W/2 - n.x) * 0.003;
+      n.vy += (H/2 - n.y) * 0.003;
+      n.vx *= _DAMP; n.vy *= _DAMP;
+      n.x = Math.max(16, Math.min(W - 16, n.x + n.vx));
+      n.y = Math.max(16, Math.min(H - 16, n.y + n.vy));
+    });
+  }
+
+  const _R = 10;
+  function _draw() {
+    const W = _canvas.width, H = _canvas.height;
+    _ctx.clearRect(0, 0, W, H);
+    _ctx.save();
+    _ctx.translate(_panX, _panY);
+    // Edges
+    _gedges.forEach(function(e) {
+      const s = _gmap[e.source], t = _gmap[e.target];
+      if (!s || !t) return;
+      _ctx.beginPath();
+      _ctx.setLineDash(e.dashed ? [5,3] : []);
+      _ctx.moveTo(s.x, s.y); _ctx.lineTo(t.x, t.y);
+      _ctx.strokeStyle = e.color || '#475569';
+      _ctx.lineWidth = 1.5;
+      _ctx.globalAlpha = 0.55;
+      _ctx.stroke();
+      _ctx.globalAlpha = 1;
+    });
+    _ctx.setLineDash([]);
+    // Nodes
+    _gnodes.forEach(function(n) {
+      _ctx.beginPath();
+      _ctx.arc(n.x, n.y, _R, 0, Math.PI*2);
+      _ctx.fillStyle = n.color || '#94a3b8';
+      _ctx.fill();
+      const border = n.border_color && n.border_color !== '#94a3b8' ? n.border_color : null;
+      if (border) {
+        _ctx.strokeStyle = border; _ctx.lineWidth = 2.5; _ctx.stroke();
+      }
+      _ctx.fillStyle = '#e2e8f0'; _ctx.font = '9px system-ui';
+      _ctx.textAlign = 'center';
+      const lbl = (n.label || n.id).slice(0, 22);
+      _ctx.fillText(lbl, n.x, n.y + _R + 10);
+    });
+    _ctx.restore();
+  }
+
+  // Pan
+  let _panX = 0, _panY = 0, _dragging = false, _lmx = 0, _lmy = 0;
+  _canvas.addEventListener('mousedown', function(e) { _dragging=true; _lmx=e.offsetX; _lmy=e.offsetY; });
+  _canvas.addEventListener('mouseup',   function()  { _dragging=false; });
+  _canvas.addEventListener('mouseleave',function()  { _dragging=false; });
+  _canvas.addEventListener('mousemove', function(e) {
+    if (!_dragging) return;
+    _panX += e.offsetX - _lmx; _panY += e.offsetY - _lmy;
+    _lmx = e.offsetX; _lmy = e.offsetY;
+  });
+
+  (function _loop() { _simulate(); _draw(); requestAnimationFrame(_loop); })();
+})();
+{% endif %}
+
 // Highlight active sidebar link on scroll
-const _navSections = ['summary','chains','findings','playbook','compliance'];
+const _navSections = ['summary','chains','findings','playbook','compliance','attack-graph'];
 const _navObserver = new IntersectionObserver(entries => {
   entries.forEach(e => {
     if (e.isIntersecting) {
@@ -735,6 +901,20 @@ class HtmlReporter:
         for group in playbook.values():
             group.sort(key=lambda x: (not x["breaks_chain"],))
 
+        # Build attack surface graph for the report
+        graph_json = "{}"
+        try:
+            from ..graph import GraphBuilder
+            from ..graph.attack_surface import AttackSurfaceAnalyzer
+            nx_graph = await GraphBuilder(self._db).build_from_db()
+            if nx_graph.number_of_nodes() > 0:
+                cytoscape_data = AttackSurfaceAnalyzer(nx_graph).to_cytoscape(
+                    {f.id: f for f in findings}
+                )
+                graph_json = json.dumps(cytoscape_data)
+        except Exception as exc:
+            log.warning("Could not build attack graph for report: %s", exc)
+
         # Build Jinja2 environment with custom filter
         env = Environment(loader=BaseLoader(), autoescape=True)
         env.filters["md_bold"] = _md_bold
@@ -759,6 +939,7 @@ class HtmlReporter:
             categories=categories,
             compliance_rows=compliance_rows,
             playbook=playbook,
+            graph_json=graph_json,
         )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

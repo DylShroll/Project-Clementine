@@ -1,0 +1,57 @@
+# Pattern: AWS Glue dev endpoint → privilege escalation via PassRole
+#
+# AWS Glue Development Endpoints run PySpark / ETL code under an IAM role
+# supplied at creation time. An identity with glue:CreateDevEndpoint and
+# iam:PassRole can spin up a dev endpoint with an overprivileged role and
+# execute arbitrary code under it, bypassing IAM policy restrictions on
+# their own identity.
+
+pattern:
+  name: "Glue development endpoint privilege escalation"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: iam-glue-createdevendpoint-allowed
+
+pivot:
+  - type: infra_finding
+    check: iam-passrole-permissive
+    relationship: same_account
+
+impact: >
+  An attacker with glue:CreateDevEndpoint and iam:PassRole can create a
+  Glue Development Endpoint attached to any IAM role they can pass, then
+  SSH into the endpoint or execute notebook code to invoke AWS APIs under
+  that role. This effectively allows the attacker to assume the permissions
+  of any passable role — often including Administrator-level policies —
+  without leaving an iam:AssumeRole trace.
+
+remediation_priority:
+  - summary: "Remove iam:PassRole from identities that do not need to create Glue resources (breaks the chain)"
+    effort: LOW
+    breaks_chain: true
+    iac_snippet: |
+      # IAM deny statement to block PassRole to Glue for non-admin roles
+      {
+        "Effect": "Deny",
+        "Action": "iam:PassRole",
+        "Resource": "*",
+        "Condition": {
+          "StringEquals": {
+            "iam:PassedToService": "glue.amazonaws.com"
+          }
+        }
+      }
+
+  - summary: "Remove glue:CreateDevEndpoint from developer policies; use Glue Studio or managed notebooks instead"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Apply an IAM permission boundary on all developer roles that restricts the maximum effective permissions"
+    effort: HIGH
+    breaks_chain: false
+    cli_command: |
+      aws iam put-role-permissions-boundary \
+        --role-name <DEVELOPER_ROLE> \
+        --permissions-boundary <BOUNDARY_POLICY_ARN>

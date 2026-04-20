@@ -1,0 +1,65 @@
+# Pattern: EKS IRSA OIDC trust wildcard → overprivileged role assumption
+#
+# IAM Roles for Service Accounts (IRSA) binds a Kubernetes service account to
+# an IAM role via an OIDC trust policy. If the trust policy uses a wildcard
+# subject condition (e.g., "sub": "system:serviceaccount:*:*") instead of
+# pinning to a specific namespace and service account, any pod in the cluster
+# can assume the role — including attacker-controlled pods.
+
+pattern:
+  name: "EKS IRSA OIDC trust too broad"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: eks-irsa-oidc-trust-wildcard
+
+pivot:
+  - type: infra_finding
+    check: iam-role-overprivileged
+    relationship: same_account
+
+impact: >
+  A misconfigured IRSA trust policy with a wildcard subject allows any pod in
+  the EKS cluster — including pods deployed by an attacker after initial
+  compromise — to assume the bound IAM role without any additional
+  authentication. When the role is overprivileged, this becomes a lateral
+  movement path from any pod to broad AWS service access (S3, Secrets Manager,
+  RDS, etc.), potentially leading to full account compromise.
+
+remediation_priority:
+  - summary: "Pin OIDC trust conditions to specific namespace and service account (e.g., sub: system:serviceaccount:prod:api-sa) — breaks the chain by preventing unauthorised pods from assuming the role"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Update the IAM role trust policy to pin the OIDC subject
+      aws iam update-assume-role-policy \
+        --role-name <ROLE_NAME> \
+        --policy-document '{
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/<OIDC_PROVIDER>"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": {
+                "<OIDC_PROVIDER>:sub": "system:serviceaccount:<NAMESPACE>:<SERVICE_ACCOUNT>",
+                "<OIDC_PROVIDER>:aud": "sts.amazonaws.com"
+              }
+            }
+          }]
+        }'
+
+  - summary: "Apply least-privilege to IRSA-bound IAM roles — remove all permissions beyond what the specific service account requires"
+    effort: MEDIUM
+    breaks_chain: false
+
+  - summary: "Audit all IRSA trust policies for wildcard subjects with: aws iam list-roles --query 'Roles[*].{Name:RoleName,Trust:AssumeRolePolicyDocument}'"
+    effort: LOW
+    breaks_chain: false
+    cli_command: |
+      aws iam list-roles \
+        --query 'Roles[?contains(AssumeRolePolicyDocument.Statement[].Condition.StringEquals.* | [], `system:serviceaccount:*:*`)].RoleName' \
+        --output table

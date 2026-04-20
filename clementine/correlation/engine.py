@@ -145,12 +145,15 @@ class CorrelationEngine:
         mcp: MCPRegistry,
         limiter: RateLimiter,
         patterns_dir: Path = _PATTERNS_DIR,
+        analyzer: Optional[Any] = None,
     ) -> None:
         self._db = db
         self._mcp = mcp
         self._limiter = limiter
         self._patterns_dir = patterns_dir
         self._patterns: list[AttackPattern] = []
+        # Optional AttackSurfaceAnalyzer for multi-hop graph traversal
+        self._analyzer = analyzer
 
     def _load_patterns(self) -> None:
         """Discover and parse all *.yaml files in the patterns directory."""
@@ -320,7 +323,11 @@ class CorrelationEngine:
         if relationship == "same_compute_resource":
             return src_id == dst_id or _same_compute_heuristic(src_id, dst_id)
 
-        # Graph-based relationship check
+        # Multi-hop graph traversal when knowledge graph is available
+        if self._analyzer is not None:
+            return self._analyzer.are_related_multi_hop(src_id, dst_id, max_hops=4)
+
+        # Fallback: existing 1-hop SQLite adjacency lookup
         neighbors = await self._db.get_resource_neighbors(src_id)
         if dst_id in neighbors:
             return True

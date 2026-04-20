@@ -1,0 +1,66 @@
+# Pattern: IAM policy rollback → privilege escalation
+#
+# AWS retains up to 5 versions of each managed IAM policy. If an identity can
+# call iam:SetDefaultPolicyVersion, it can roll back to an older, more
+# permissive version of a policy — effectively granting itself elevated
+# permissions without creating any new policy resources.
+
+pattern:
+  name: "IAM policy rollback privilege escalation"
+  severity: HIGH
+
+entry:
+  type: infra_finding
+  check: iam-setdefaultpolicyversion-allowed
+
+pivot:
+  - type: infra_finding
+    check: iam-policy-has-older-permissive-versions
+    relationship: same_account
+
+impact: >
+  An attacker with iam:SetDefaultPolicyVersion on any managed policy can revert
+  to a previously-permissive version of that policy. If the policy is attached
+  to their own user, group, or role, this is a self-escalation path that
+  bypasses all controls that monitor policy creation or attachment.
+  No new resources are created, so the action may evade CloudTrail alerting
+  tuned for iam:PutUserPolicy / iam:CreatePolicy events.
+
+remediation_priority:
+  - summary: "Remove iam:SetDefaultPolicyVersion from all non-administrator IAM policies (breaks the chain)"
+    effort: LOW
+    breaks_chain: true
+    cli_command: |
+      # Find policies granting SetDefaultPolicyVersion
+      aws iam get-account-authorization-details \
+        --output json \
+        --query 'Policies[*].{Name:PolicyName,Versions:PolicyVersionList}' \
+        | python3 -c "
+      import json,sys
+      for p in json.load(sys.stdin):
+          for v in p.get('Versions',[]):
+              doc=v.get('Document',{})
+              stmts=doc.get('Statement',[]) if isinstance(doc,dict) else []
+              for s in stmts:
+                  if 'iam:SetDefaultPolicyVersion' in str(s.get('Action','')):
+                      print(p['Name'])
+      "
+
+  - summary: "Purge all older policy versions that contain overly-permissive statements (e.g., Action: '*')"
+    effort: MEDIUM
+    breaks_chain: false
+    cli_command: |
+      # List non-default versions of a policy
+      aws iam list-policy-versions \
+        --policy-arn <POLICY_ARN> \
+        --query 'Versions[?!IsDefaultVersion].VersionId' \
+        --output text
+
+      # Delete a specific non-default version
+      aws iam delete-policy-version \
+        --policy-arn <POLICY_ARN> \
+        --version-id <VERSION_ID>
+
+  - summary: "Enable CloudTrail alerting on iam:SetDefaultPolicyVersion API calls via CloudWatch"
+    effort: LOW
+    breaks_chain: false

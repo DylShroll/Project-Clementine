@@ -29,6 +29,38 @@ from ..scope import RateLimiter, ScopeGuard
 log = logging.getLogger(__name__)
 
 
+async def _build_knowledge_graph(
+    db: FindingsDB,
+    mcp: MCPRegistry,
+    limiter: RateLimiter,
+    cfg: ClementineConfig,
+) -> None:
+    """Build the AWS knowledge graph from findings + resource_graph and persist nodes."""
+    from ..graph import GraphBuilder
+
+    try:
+        builder = GraphBuilder(db)
+        nx_graph = await builder.build(mcp=mcp, limiter=limiter)
+
+        for node in builder.get_nodes():
+            await db.upsert_graph_node(
+                node_id=node.node_id,
+                node_type=node.node_type.value,
+                label=node.label,
+                properties=node.properties,
+                is_internet_facing=node.is_internet_facing,
+            )
+
+        await db.set_state("knowledge_graph_built", "true")
+        log.info(
+            "[Phase 2] Knowledge graph: %d nodes, %d edges",
+            nx_graph.number_of_nodes(),
+            nx_graph.number_of_edges(),
+        )
+    except Exception as exc:
+        log.warning("[Phase 2] Knowledge graph build failed (non-fatal): %s", exc)
+
+
 async def run_aws_audit(
     cfg: ClementineConfig,
     db: FindingsDB,
@@ -53,6 +85,9 @@ async def run_aws_audit(
     # Populate the resource graph from cloud-audit service map
     if mcp.is_available("cloud_audit"):
         await _build_resource_graph(db, mcp, limiter, cfg)
+
+    # Build and persist the AWS knowledge graph
+    await _build_knowledge_graph(db, mcp, limiter, cfg)
 
     log.info(
         "[Phase 2] AWS audit complete — %d findings stored (after dedup)",
