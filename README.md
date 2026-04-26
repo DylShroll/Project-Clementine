@@ -2,9 +2,9 @@
 
 Automated web-app penetration-testing orchestrator. Coordinates six security MCP servers to deliver assessments that span both application-layer vulnerabilities (OWASP WSTG) and AWS infrastructure misconfigurations — then automatically correlates them into compound attack chains that neither layer of tooling can find on its own.
 
-The engine builds a **NetworkX-backed AWS knowledge graph** during each assessment, enabling multi-hop attack path traversal, blast radius calculation, and a visual attack surface map in the HTML report.
+The engine builds a **NetworkX-backed AWS knowledge graph** during each assessment, enabling multi-hop attack path traversal, edge-typed IAM topology queries, blast radius calculation, and a visual attack surface map in the HTML report.
 
-```
+```text
 SSRF (medium)  +  IMDSv1 enabled  +  overprivileged IAM role  =  full account takeover (critical)
 ```
 
@@ -17,10 +17,10 @@ Project Clementine runs five sequential phases:
 | Phase | What happens |
 | --- | --- |
 | 1 — Recon | Crawls endpoints, fingerprints tech stack, maps AWS resources from response headers |
-| 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised. Builds the AWS knowledge graph: principals, compute, storage, and network nodes with IAM trust and permission edges |
+| 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised. Builds the AWS knowledge graph: principals, compute, storage, and network nodes with live IAM trust and permission edges |
 | 3 — App Test | Full OWASP WSTG test suite via AutoPentest AI; Playwright validates DOM-based findings |
 | 3.5 — AI Triage | Claude scores each finding: confidence, false-positive flag, and rationale. Skipped when `ANTHROPIC_API_KEY` is unset |
-| 4 — Correlation | Rule-based pattern engine (46 patterns) fuses app + infra findings into compound attack chains using multi-hop graph traversal. Bridges web-app SSRF findings into the AWS graph. Optional AI chain discovery proposes novel paths |
+| 4 — Correlation | Rule-based pattern engine (47 patterns) fuses app + infra findings into compound attack chains using edge-typed multi-hop graph traversal. Bridges web-app SSRF findings into the AWS graph. Optional AI chain discovery proposes novel paths |
 | 5 — Reporting | HTML (with interactive Attack Graph), JSON, SARIF, Markdown, and optional AWS Security Hub push |
 
 ---
@@ -29,23 +29,85 @@ Project Clementine runs five sequential phases:
 
 Phase 2 constructs a directed graph `G = (V, E)` over the AWS environment:
 
-**Nodes (V)** — IAM users and roles, EC2 instances, EKS pods and nodes, Lambda functions, S3 buckets, RDS instances, Secrets Manager secrets, SSM parameters, VPCs, security groups, VPC endpoints, IMDS (`169.254.169.254`), and web endpoints from AutoPentest AI.
+**Nodes (V)** — IAM users and roles, EC2 instances, EKS pods and nodes, Lambda functions and layers, S3 buckets, RDS instances, Secrets Manager secrets, SSM parameters, VPCs, security groups, VPC endpoints, VPC peering connections, transit gateways, API Gateway routes, KMS keys, SNS topics, SQS queues, CloudFront distributions, WAF ACLs, IMDS (`169.254.169.254`), web endpoints from AutoPentest AI, and wildcard resource placeholders (`Resource: "*"`).
 
-**Edges (E)** — IAM trust relationships (`CAN_ASSUME`), permission grants (`HAS_PERMISSION`, `CAN_PASS_ROLE`), compute attachments (`ATTACHED_TO`, `HOSTS_APP`), network topology (`ROUTES_TO`, `INTERNET_FACING`), exploit paths (`SSRF_REACHABLE`), and EKS IRSA bindings (`IRSA_BOUND`, `OIDC_TRUSTS`).
+**Edges (E)** — IAM trust relationships (`CAN_ASSUME`), permission grants (`HAS_PERMISSION`, `CAN_PASS_ROLE`), compute attachments (`ATTACHED_TO`, `HOSTS_APP`), network topology (`ROUTES_TO`, `INTERNET_FACING`, `PEERED_WITH`), exploit paths (`SSRF_REACHABLE`), EKS IRSA bindings (`IRSA_BOUND`, `OIDC_TRUSTS`), invocation paths (`INVOKES`), encryption (`ENCRYPTS_WITH`, `KEY_POLICY_GRANTS`), messaging (`SUBSCRIBES_TO`), Lambda layer usage (`USES_LAYER`), and WAF coverage (`WAF_PROTECTS`).
 
-The graph persists across phases. Phase 4 reconstructs it from the database and bridges SSRF findings from the application layer as `SSRF_REACHABLE` edges into the IMDS node. The correlation engine uses multi-hop graph traversal (up to 4 hops by default) instead of the previous single-hop adjacency check — allowing patterns like `web endpoint → EC2 → IAM role → S3` to be detected automatically.
+### Live IAM Enumeration
+
+Phase 2 runs a live IAM topology pass against the target account via the cloud-audit MCP server. Three sub-passes build the IAM portion of the graph:
+
+1. **Roles + trust policies** — lists all in-scope IAM roles, parses each `AssumeRolePolicyDocument`, and emits `CAN_ASSUME` edges from every principal in the trust policy (account roots, AWS services, federated identities, other roles). OIDC federated principals produce `OIDC_TRUSTS` edges.
+2. **Attached + inline policies** — fetches attached managed policies and inline policies for each principal. Emits `HAS_PERMISSION` edges to named resources and to a wildcard placeholder node when `Resource: "*"` is used (marked `is_wildcard: true` on the edge).
+3. **PassRole grants** — any policy statement that allows `iam:PassRole` produces `CAN_PASS_ROLE` edges, making Lambda/EC2/ECS privilege-escalation chains visible in the graph.
+
+All three passes are independently failure-tolerant. If IAM listing returns auth errors, the outcome is recorded in the `enrichment_status` table so reports can disclose graph completeness rather than silently emitting a partial topology.
+
+### Graph storage
+
+Edges derived from IAM enumeration and findings are persisted in the `graph_edges` table with a `properties` JSON column carrying `finding_ids`, `action_list`, `condition_keys`, and `is_wildcard`. The legacy `resource_graph` adjacency table is still read for backwards compatibility; both are unioned into the NetworkX graph at reconstruction time.
+
+### Graph queries
+
+`AttackSurfaceAnalyzer` provides three queryable operations beyond binary reachability:
+
+- `paths_between(src, dst, edge_types=None, max_hops=4)` — returns concrete annotated paths (list of `(node, edge_type)` tuples) optionally filtered to specific edge types. Used by the correlation engine when a pattern specifies a `via_edges` constraint.
+- `principals_reaching(resource_id, edge_types=("CAN_ASSUME","CAN_PASS_ROLE","HAS_PERMISSION"))` — returns every IAM principal (role, user, EKS service account) that can ultimately reach a given resource through IAM access edges.
+- `cycle_detect()` — flags IAM trust cycles (role-assume loops), which are usually misconfigurations.
+
+### Attack graph visualisation
 
 The HTML report includes an **Attack Graph** tab with a force-directed canvas renderer:
 
 - Purple nodes — IAM principals (roles, users, EKS service accounts)
 - Blue nodes — Compute (EC2, EKS pods/nodes)
 - Green nodes — Storage (S3, RDS, Secrets Manager, SSM)
-- Amber nodes — Lambda functions
+- Amber nodes — Lambda functions and layers
 - Red nodes — Web endpoints and IMDS
-- Teal nodes — Network (VPC, security groups)
+- Teal nodes — Network (VPC, security groups, VPC peering, transit gateways)
+- Orange nodes — Messaging and API (SNS, SQS, API Gateway, CloudFront)
+- Grey nodes — KMS keys, WAF ACLs
 - Dashed red edges — Exploit paths (SSRF reachable, internet-facing)
+- Dashed grey edges — Key policy grants
 
-Nodes are colour-bordered by the severity of their linked findings. Drag to pan. The graph is omitted from the report when no graph nodes exist in the database.
+Nodes are colour-bordered by the severity of their linked findings. Drag to pan. Hovering an edge shows the finding IDs that established it. The graph is omitted from the report when no graph nodes exist in the database.
+
+---
+
+## Token telemetry and cost control
+
+Every Claude API call (triage batches and discovery) is instrumented with per-call usage metrics. Totals are persisted to the `ai_usage` table and printed at the end of each `clementine run`:
+
+```text
+AI usage summary
+  triage_batch   claude-sonnet-4-6   in=12,340  out=4,210  cache_read=8,100
+  discovery      claude-opus-4-7     in=9,180   out=3,220  cache_read=0
+  ─────────────────────────────────────────────────────────────────────────
+  TOTAL                               in=21,520  out=7,430  cache_read=8,100
+```
+
+### Discovery prompt compression
+
+The AI discovery phase uses several techniques to reduce the per-run token cost:
+
+- **ARN aliasing** — long ARNs are replaced with short aliases (`r1`, `r2`, …) defined in a legend block at the top of the prompt. The alias is used throughout the findings table and edge list.
+- **Subgraph pruning** — only edges whose endpoints are within `discovery.subgraph_hops` (default: 2) of a finding-bearing node are included. Topology-only edges that can't participate in a chain are dropped.
+- **Edge grouping** — edges with the same relationship type are emitted as a single compact line (`CAN_ASSUME: r1→r3, r2→r3`) instead of one line per edge.
+- **Finding pre-filter** — findings marked as false positives, below the minimum confidence threshold, or at INFO severity are dropped before they reach the prompt. Findings whose resource has no edges in the pruned subgraph are also dropped.
+- **Budget caps** — `max_tokens` is capped at 8192 (down from 16384), thinking `effort` defaults to `"medium"`, and `max_retries` is 1 (preventing 3× bill amplification on transient errors).
+- **Cache breakpoint** — the static findings/graph block and the short instruction tail are sent as separate `cache_control: ephemeral` blocks so the static portion can be served from cache on subsequent calls.
+
+### Discovery configuration knobs
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `ai.discovery.max_tokens` | `8192` | Maximum output tokens for the discovery call |
+| `ai.discovery.effort` | `"medium"` | Opus thinking depth: `"low"` / `"medium"` / `"high"` |
+| `ai.discovery.max_retries` | `1` | Retry budget for the discovery call |
+| `ai.discovery.min_finding_confidence` | `0.4` | Drop findings below this triage confidence score |
+| `ai.discovery.include_info` | `false` | Include INFO-severity findings in the discovery prompt |
+| `ai.discovery.subgraph_hops` | `2` | BFS radius around finding-bearing nodes for subgraph pruning |
+| `ai.discovery.drop_unreachable_findings` | `true` | Drop findings with no edges in the pruned subgraph |
 
 ---
 
@@ -309,7 +371,7 @@ Set `finding_db: "postgresql://clementine:${DB_PASSWORD}@db:5432/clementine"` in
 
 ## Attack pattern library
 
-Compound attack patterns live in `patterns/` as YAML files. 46 built-in patterns span injection, authentication, cloud infrastructure, privilege escalation, supply chain, and client-side attack classes. All patterns use the same rule format and are auto-discovered at startup — no code changes needed to add or remove them.
+Compound attack patterns live in `patterns/` as YAML files. 47 built-in patterns span injection, authentication, cloud infrastructure, privilege escalation, supply chain, and client-side attack classes. All patterns use the same rule format and are auto-discovered at startup — no code changes needed to add or remove them.
 
 ### Injection
 
@@ -328,7 +390,7 @@ Compound attack patterns live in `patterns/` as YAML files. 46 built-in patterns
 ### Authentication & Session
 
 | Pattern | Entry | Severity |
-|---|---|---|
+| --- | --- | --- |
 | `jwt_weak_secret_privilege_escalation.yaml` | Weak JWT secret → forged admin token → privilege escalation | CRITICAL |
 | `exposed_secrets_lateral.yaml` | Hardcoded creds → stale IAM key → lateral movement | CRITICAL |
 | `path_traversal_source_secrets.yaml` | Path traversal → config/source read → stale IAM key | CRITICAL |
@@ -366,6 +428,7 @@ Compound attack patterns live in `patterns/` as YAML files. 46 built-in patterns
 
 | Pattern | Entry | Severity |
 | --- | --- | --- |
+| `iam_assume_chain_to_admin_via_edges.yaml` | Over-privileged principal → admin role reachable via ≤3 CAN_ASSUME / CAN_PASS_ROLE hops | CRITICAL |
 | `lambda_backdoor_privilege_escalation.yaml` | Excessive Lambda permissions + iam:PassRole → code execution under privileged role | HIGH |
 | `iam_policy_rollback_privilege_escalation.yaml` | iam:SetDefaultPolicyVersion + stale permissive policy versions → self-escalation without new resources | HIGH |
 | `glue_dev_endpoint_privilege_escalation.yaml` | glue:CreateDevEndpoint + iam:PassRole → arbitrary code under any passable role | HIGH |
@@ -375,7 +438,7 @@ Compound attack patterns live in `patterns/` as YAML files. 46 built-in patterns
 ### Supply Chain
 
 | Pattern | Entry | Severity |
-|---|---|---|
+| --- | --- | --- |
 | `ci_oidc_misconfiguration_supply_chain.yaml` | OIDC trust too broad → any repo assumes role → artefact poisoning | CRITICAL |
 
 ### Adding a custom pattern
@@ -398,7 +461,24 @@ pivot:
   - type: infra_finding
     check: iam-role-overprivileged
     relationship: same_account  # same_account | same_compute_resource
+```
 
+For IAM-topology chains, use the `via_edges` constraint instead of a loose relationship string. This tells the engine to only match when there is a real IAM traversal path — not just topological adjacency:
+
+```yaml
+pivot:
+  - type: infra_finding
+    check: iam-admin-role-exists
+    relationship:
+      via_edges:
+        - CAN_ASSUME
+        - CAN_PASS_ROLE
+      max_hops: 3
+```
+
+Without `via_edges`, the engine falls back to any-edge multi-hop reachability, which can produce false-positive chains via shared VPC or security group membership. Use `via_edges` whenever the chain requires a specific IAM access path.
+
+```yaml
 impact: >
   Describe what an attacker can achieve by chaining these findings.
 
@@ -433,6 +513,13 @@ Restart the tool — the new pattern is picked up automatically.
 | `orchestrator.finding_db` | `sqlite:///findings.db` | SQLite path or PostgreSQL DSN |
 | `orchestrator.pause_between_phases` | `false` | Wait for ENTER before each phase |
 | `orchestrator.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `ai.discovery.max_tokens` | `8192` | Max output tokens for AI discovery call |
+| `ai.discovery.effort` | `"medium"` | Opus thinking depth (`low` / `medium` / `high`) |
+| `ai.discovery.max_retries` | `1` | Retry budget for AI discovery |
+| `ai.discovery.min_finding_confidence` | `0.4` | Minimum triage confidence to include a finding |
+| `ai.discovery.include_info` | `false` | Include INFO-severity findings in discovery |
+| `ai.discovery.subgraph_hops` | `2` | Graph BFS radius for prompt pruning |
+| `ai.discovery.drop_unreachable_findings` | `true` | Exclude findings with no pruned-subgraph edges |
 
 ---
 
@@ -441,13 +528,13 @@ Restart the tool — the new pattern is picked up automatically.
 | Server | Transport | Required | Purpose |
  | --- | --- | --- | --- |
 | AutoPentest AI | stdio (Docker) | Yes | OWASP WSTG application testing |
-| cloud-audit | stdio (`uvx`) | Yes | AWS configuration scanning |
+| cloud-audit | stdio (`uvx`) | Yes | AWS configuration scanning and IAM enumeration |
 | Prowler | stdio (`uvx`) | No | Compliance framework mapping |
 | AWS Knowledge | HTTP (remote) | No | Remediation SOP enrichment |
 | AWS Documentation | stdio (`uvx`) | No | Documentation link enrichment |
 | Playwright | stdio (`npx`) | No | DOM-based PoC validation |
 
-Clementine degrades gracefully when non-critical servers are unavailable — the assessment continues with reduced enrichment and a warning in the logs.
+Clementine degrades gracefully when non-critical servers are unavailable — the assessment continues with reduced enrichment and a warning in the logs. If the cloud-audit server is unavailable during IAM enumeration, the outcome is recorded in the `enrichment_status` table and disclosed in the report.
 
 ---
 
@@ -483,13 +570,12 @@ clementine run --config clementine.yaml
 
 ## Things I want to do with the project
 
-- Fix the darn knowledge graph? It's not adding value in test cases
 - Embeddings model layer on top of the knowledge graph for semantic similarity search and novel exploit chain suggestion
 - GUI / web dashboard for live assessment monitoring
 - Azure, GCP integrations
 - IaC scanning (Terraform, CloudFormation, CDK)
 - Additional correlation patterns based on emerging exploit paths
 - Increase backoff time on `clementine.mcp_client` failures during rate-limit errors
-- Decrease costs/scan.
-- Increase llm tracability/visibility
-- Increase scan speed
+- Incremental / re-run discovery: cache the static findings+graph block across runs so only deltas are sent to the model
+- `cycle_detect()` findings: surface IAM trust loops as their own finding category in the correlation engine
+- Switch `AttackSurfaceAnalyzer` to `nx.MultiDiGraph` to properly represent multiple edge types between the same node pair
