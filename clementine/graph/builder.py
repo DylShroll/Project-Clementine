@@ -67,10 +67,12 @@ _IAM_RESOURCE_MAP: dict[str, AWSNodeType] = {
     "role/":   AWSNodeType.IAM_ROLE,
 }
 
-# Lambda-only sub-resource override.
+# Lambda-only sub-resource override. Keys are matched against parts[5] from
+# `arn.split(":", 6)`, which gives e.g. "layer" or "function" (no trailing
+# colon — the rest of the ARN is in parts[6]).
 _LAMBDA_RESOURCE_MAP: dict[str, AWSNodeType] = {
-    "layer:":     AWSNodeType.LAMBDA_LAYER,
-    "function:":  AWSNodeType.LAMBDA_FUNCTION,
+    "layer":     AWSNodeType.LAMBDA_LAYER,
+    "function":  AWSNodeType.LAMBDA_FUNCTION,
 }
 
 
@@ -93,11 +95,12 @@ def _infer_node_type(resource_type: str | None, resource_id: str | None) -> AWSN
                     return ntype
             return AWSNodeType.IAM_ROLE
 
-        # Lambda sub-resource: distinguish function vs layer
+        # Lambda sub-resource: distinguish function vs layer.
+        # parts[5] is just "layer" or "function" — match it as a token, not
+        # a substring (otherwise "layer" would also match "function:layer-x").
         if service == "lambda":
-            for key, ntype in _LAMBDA_RESOURCE_MAP.items():
-                if key in resource:
-                    return ntype
+            if resource in _LAMBDA_RESOURCE_MAP:
+                return _LAMBDA_RESOURCE_MAP[resource]
             return AWSNodeType.LAMBDA_FUNCTION
 
         # EC2 sub-resource match (peering, transit-gw, security-group, …)
