@@ -234,6 +234,31 @@ class AIDiscoveryConfig(BaseModel):
     # Chains the model scores below this confidence are dropped, since the
     # AI-discovery path is inherently more speculative than rule patterns.
     min_confidence: float = 0.5
+    # Output token cap for the discovery call. The schema is bounded by
+    # max_chains, so 16K was wildly over-provisioned; 8K is a comfortable
+    # cap for ~10 narrative chains.
+    max_tokens: int = 8192
+    # Opus thinking effort for discovery only — kept separate from the
+    # global ai.effort so triage stays at the configured default.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    # Discovery is one large call; retries silently multiply spend, so the
+    # default is "fail loudly after one transient error" rather than three.
+    max_retries: int = 1
+    # Findings whose triage confidence is below this are dropped before the
+    # call. Acts as a quality floor — anything the triage pass thinks is
+    # noise can't end up as the entry/pivot of a discovered chain.
+    min_finding_confidence: float = 0.4
+    # Whether to feed INFO-severity findings into discovery. INFO findings
+    # almost never participate in real chains; excluding them is the
+    # cheapest no-quality-loss reduction we can make.
+    include_info: bool = False
+    # Hop radius around finding-bearing resources used to prune the resource
+    # graph before serialisation. 2 hops captures realistic pivot chains
+    # without dragging in the whole account topology.
+    subgraph_hops: int = 2
+    # When True, findings whose resource is isolated in the pruned subgraph
+    # are also dropped — they can't multi-hop to anything else.
+    drop_unreachable_findings: bool = True
 
 
 class AIConfig(BaseModel):

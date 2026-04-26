@@ -41,7 +41,7 @@ async def run_ai_triage(
         log.info("[Phase 3.5] Triage disabled in config — skipping")
         return
 
-    client = ClaudeClient.from_config(cfg.ai)
+    client = ClaudeClient.from_config(cfg.ai, db=db)
     if client is None:
         log.info("[Phase 3.5] Claude client unavailable — skipping triage")
         return

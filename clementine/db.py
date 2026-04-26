@@ -253,6 +253,43 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
     properties      TEXT,           -- JSON blob (must include finding_ids list)
     internet_facing INTEGER DEFAULT 0
 );
+
+-- Richer edge store with provenance — supersedes resource_graph for any
+-- edge type that needs properties (statement Sid, action list, finding_ids,
+-- is_wildcard, etc.). resource_graph stays read-only for back-compat.
+CREATE TABLE IF NOT EXISTS graph_edges (
+    edge_id      TEXT PRIMARY KEY,
+    source_id    TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    edge_type    TEXT NOT NULL,
+    properties   TEXT,           -- JSON blob (finding_ids, is_wildcard, actions, …)
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (source_id, target_id, edge_type)
+);
+
+-- Per-enrichment-pass status so partial-failure runs can still produce
+-- reports that disclose graph completeness ("IAM enumeration unavailable").
+CREATE TABLE IF NOT EXISTS enrichment_status (
+    pass_name TEXT PRIMARY KEY,
+    status    TEXT NOT NULL,     -- ok | partial | unavailable
+    detail    TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Per-call Claude API token accounting. One row per messages.parse() return.
+-- Aggregated at end of run for the summary print and as a regression baseline
+-- when tuning prompts / models.
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                   TEXT NOT NULL,
+    call_site                TEXT NOT NULL,        -- e.g. 'discovery', 'triage_batch'
+    model                    TEXT NOT NULL,
+    input_tokens             INTEGER NOT NULL DEFAULT 0,
+    output_tokens            INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Lightweight, idempotent migrations for DBs created before the triage /
@@ -631,6 +668,209 @@ class FindingsDB:
                 (node_id, node_type, label[:500], props_json, int(is_internet_facing)),
             )
             await self._conn.commit()
+
+    # ------------------------------------------------------------------
+    # Rich graph edges (graph_edges + enrichment_status)
+    # ------------------------------------------------------------------
+
+    async def add_graph_edge(
+        self,
+        *,
+        source_id: str,
+        target_id: str,
+        edge_type: str,
+        properties: Optional[dict] = None,
+    ) -> None:
+        """Insert (or merge) a typed edge with optional properties.
+
+        On UNIQUE conflict (same source/target/type), merges properties:
+          * ``finding_ids`` lists are union-merged
+          * other keys: existing values win
+        """
+        props = properties or {}
+        async with self._write_lock:
+            async with self._conn.execute(
+                """
+                SELECT edge_id, properties FROM graph_edges
+                WHERE source_id = ? AND target_id = ? AND edge_type = ?
+                """,
+                (source_id, target_id, edge_type),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row is None:
+                edge_id = str(uuid.uuid4())
+                await self._conn.execute(
+                    """
+                    INSERT INTO graph_edges (edge_id, source_id, target_id, edge_type, properties)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (edge_id, source_id, target_id, edge_type, json.dumps(props)),
+                )
+            else:
+                existing_props = json.loads(row["properties"]) if row["properties"] else {}
+                merged = dict(existing_props)
+                for k, v in props.items():
+                    if k == "finding_ids":
+                        existing = merged.get("finding_ids") or []
+                        seen = set(existing)
+                        for fid in (v or []):
+                            if fid not in seen:
+                                existing.append(fid)
+                                seen.add(fid)
+                        merged["finding_ids"] = existing
+                    elif k not in merged:
+                        merged[k] = v
+                await self._conn.execute(
+                    "UPDATE graph_edges SET properties = ? WHERE edge_id = ?",
+                    (json.dumps(merged), row["edge_id"]),
+                )
+            await self._conn.commit()
+
+    async def get_graph_edges(
+        self, edge_type: Optional[str] = None
+    ) -> list[dict]:
+        """Return all rich edges, optionally filtered by edge_type."""
+        if edge_type is not None:
+            sql = "SELECT source_id, target_id, edge_type, properties FROM graph_edges WHERE edge_type = ?"
+            params = [edge_type]
+        else:
+            sql = "SELECT source_id, target_id, edge_type, properties FROM graph_edges"
+            params = []
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "source_id": r["source_id"],
+                "target_id": r["target_id"],
+                "edge_type": r["edge_type"],
+                "properties": json.loads(r["properties"]) if r["properties"] else {},
+            }
+            for r in rows
+        ]
+
+    async def set_enrichment_status(
+        self, pass_name: str, status: str, detail: str = ""
+    ) -> None:
+        """Record the outcome of an enrichment pass (ok / partial / unavailable)."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT INTO enrichment_status (pass_name, status, detail, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(pass_name) DO UPDATE SET
+                    status = excluded.status,
+                    detail = excluded.detail,
+                    updated_at = excluded.updated_at
+                """,
+                (pass_name, status, detail),
+            )
+            await self._conn.commit()
+
+    async def get_enrichment_status(self) -> list[dict]:
+        """Return all enrichment-status rows for report disclosure."""
+        async with self._conn.execute(
+            "SELECT pass_name, status, detail, updated_at FROM enrichment_status"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "pass_name": r["pass_name"],
+                "status": r["status"],
+                "detail": r["detail"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    # ------------------------------------------------------------------
+    # AI usage telemetry
+    # ------------------------------------------------------------------
+
+    async def get_or_create_run_id(self) -> str:
+        """Return the current run's ID, generating + persisting one if absent.
+
+        Stamped fresh each time a new assessment starts (orchestrator clears
+        it on new runs); persists across resumes so token accounting follows
+        the logical run rather than the process.
+        """
+        existing = await self.get_state("current_run_id", "")
+        if existing:
+            return existing
+        new_id = str(uuid.uuid4())
+        await self.set_state("current_run_id", new_id)
+        return new_id
+
+    async def reset_run_id(self) -> str:
+        """Generate a new run_id and persist it; returns the new value."""
+        new_id = str(uuid.uuid4())
+        await self.set_state("current_run_id", new_id)
+        return new_id
+
+    async def record_ai_usage(
+        self,
+        *,
+        run_id: str,
+        call_site: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+    ) -> None:
+        """Insert a row capturing one Claude API call's token usage."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT INTO ai_usage (
+                    run_id, call_site, model, input_tokens, output_tokens,
+                    cache_creation_tokens, cache_read_tokens
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id, call_site, model,
+                    int(input_tokens), int(output_tokens),
+                    int(cache_creation_tokens), int(cache_read_tokens),
+                ),
+            )
+            await self._conn.commit()
+
+    async def get_ai_usage_summary(self, run_id: str) -> list[dict]:
+        """Return aggregated token usage rows for a run, grouped by call_site/model.
+
+        Each dict has: call_site, model, calls, input_tokens, output_tokens,
+        cache_creation_tokens, cache_read_tokens.
+        """
+        async with self._conn.execute(
+            """
+            SELECT
+                call_site,
+                model,
+                COUNT(*)                        AS calls,
+                SUM(input_tokens)               AS input_tokens,
+                SUM(output_tokens)              AS output_tokens,
+                SUM(cache_creation_tokens)      AS cache_creation_tokens,
+                SUM(cache_read_tokens)          AS cache_read_tokens
+            FROM ai_usage
+            WHERE run_id = ?
+            GROUP BY call_site, model
+            ORDER BY input_tokens DESC
+            """,
+            (run_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "call_site": r["call_site"],
+                "model": r["model"],
+                "calls": r["calls"],
+                "input_tokens": r["input_tokens"] or 0,
+                "output_tokens": r["output_tokens"] or 0,
+                "cache_creation_tokens": r["cache_creation_tokens"] or 0,
+                "cache_read_tokens": r["cache_read_tokens"] or 0,
+            }
+            for r in rows
+        ]
 
     async def get_graph_nodes(self) -> list:
         """Return all persisted graph nodes as GraphNode objects."""

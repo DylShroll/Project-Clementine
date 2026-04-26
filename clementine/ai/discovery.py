@@ -28,7 +28,7 @@ Workflow
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,9 @@ from ..db import (
     Finding, FindingsDB, RemediationAction, Severity,
 )
 from .client import ClaudeClient
+
+if TYPE_CHECKING:
+    from ..graph.attack_surface import AttackSurfaceAnalyzer
 
 log = logging.getLogger(__name__)
 
@@ -173,24 +176,65 @@ async def discover_chains(
     client: ClaudeClient,
     cfg: AIConfig,
     db: FindingsDB,
+    analyzer: Optional["AttackSurfaceAnalyzer"] = None,
 ) -> list[AttackChain]:
     """Propose novel attack chains, persist the accepted ones, return them.
 
     Returns only chains that passed the confidence threshold *and* were
     successfully mapped to real findings in the DB.
+
+    When *analyzer* is provided, the resource graph is pruned to nodes within
+    a couple of hops of any finding-bearing resource before being serialised
+    into the prompt; this is the dominant input-token reduction on real runs.
     """
-    findings = await db.get_findings()
-    if not findings:
+    all_findings = await db.get_findings()
+    if not all_findings:
         log.info("AI discovery: no findings to analyse — skipping")
+        return []
+
+    # Pre-filter findings: drop triaged false positives, sub-confidence, and
+    # (optionally) INFO-severity. These never participate in real chains and
+    # they're the bulk of the token spend on noisy assessments.
+    findings = _prefilter_findings(all_findings, cfg.discovery)
+    if not findings:
+        log.info(
+            "AI discovery: all %d findings filtered out — skipping",
+            len(all_findings),
+        )
         return []
 
     existing_chains = await db.get_attack_chains()
     graph_edges = await _load_graph_edges(db)
 
-    prompt = _render_discovery_prompt(
+    # Compute the keep-set used for both edge pruning and "this finding's
+    # resource is graph-reachable" filtering.
+    finding_resource_ids = {
+        f.resource_id for f in findings if f.resource_id
+    }
+    keep_node_ids: Optional[set[str]] = None
+    if analyzer is not None and finding_resource_ids:
+        keep_node_ids = analyzer.subgraph_around(
+            finding_resource_ids, hops=cfg.discovery.subgraph_hops
+        )
+        # Drop findings whose resource is isolated in the pruned subgraph;
+        # they can't form multi-hop chains with anything else.
+        if cfg.discovery.drop_unreachable_findings and keep_node_ids:
+            before = len(findings)
+            findings = [
+                f for f in findings
+                if not f.resource_id or f.resource_id in keep_node_ids
+            ]
+            if len(findings) < before:
+                log.info(
+                    "AI discovery: dropped %d findings with no graph reach",
+                    before - len(findings),
+                )
+
+    static_user_content, instruction_tail = _render_discovery_prompt(
         findings=findings,
         existing_chains=existing_chains,
         graph_edges=graph_edges,
+        keep_node_ids=keep_node_ids,
     )
 
     system_blocks = [
@@ -200,26 +244,47 @@ async def discover_chains(
             "cache_control": {"type": "ephemeral"},
         }
     ]
+    # Cache-control breakpoint between the (large, stable) findings + graph
+    # block and the (short, instruction-only) tail. On a single-call run
+    # this only pays the cache-write cost, but any re-run within the cache
+    # TTL replays the whole static block from cache instead of reprocessing.
+    user_blocks = [
+        {
+            "type": "text",
+            "text": static_user_content,
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": instruction_tail,
+        },
+    ]
 
     log.info(
-        "AI discovery: analysing %d findings, %d existing chains, %d graph edges",
-        len(findings), len(existing_chains), len(graph_edges),
+        "AI discovery: analysing %d findings (of %d), %d existing chains, %d graph edges",
+        len(findings), len(all_findings), len(existing_chains), len(graph_edges),
     )
 
     try:
         result: DiscoveryResult = await client.parse(
             response_model=DiscoveryResult,
             system=system_blocks,
-            user_content=prompt,
-            max_tokens=16384,
+            user_content=user_blocks,
+            max_tokens=cfg.discovery.max_tokens,
             model=cfg.critical_model,
+            call_site="discovery",
+            effort=cfg.discovery.effort,
+            max_retries=cfg.discovery.max_retries,
         )
     except Exception as exc:
         log.error("AI discovery request failed: %s", exc)
         return []
 
-    # Build a lookup so we can reject hallucinated finding IDs.
-    finding_by_id = {f.id: f for f in findings}
+    # Build a lookup so we can reject hallucinated finding IDs. Use the
+    # *full* finding set so the model can reference findings that were
+    # pre-filtered out (the model shouldn't have been told about them, but
+    # if it somehow refers to one we still want to accept it).
+    finding_by_id = {f.id: f for f in all_findings}
 
     accepted = _filter_and_validate(
         proposals=result.chains,
@@ -258,13 +323,65 @@ async def _load_graph_edges(db: FindingsDB) -> list[tuple[str, str, str]]:
     return [(r["source_arn"], r["target_arn"], r["relationship"]) for r in rows]
 
 
+def _prefilter_findings(
+    findings: list[Finding], discovery_cfg
+) -> list[Finding]:
+    """Drop findings that can't meaningfully participate in a discovered chain.
+
+    Cuts triaged false positives, low-confidence triage verdicts, and
+    (by default) INFO-severity noise. Combined with the graph-reachability
+    pass in :func:`discover_chains` this is the dominant input-token cut.
+    """
+    keep: list[Finding] = []
+    dropped_fp = dropped_low_conf = dropped_info = 0
+    for f in findings:
+        if f.triage_is_false_positive is True:
+            dropped_fp += 1
+            continue
+        if (
+            f.triage_confidence is not None
+            and f.triage_confidence < discovery_cfg.min_finding_confidence
+        ):
+            dropped_low_conf += 1
+            continue
+        if (
+            not discovery_cfg.include_info
+            and f.severity == Severity.INFO
+        ):
+            dropped_info += 1
+            continue
+        keep.append(f)
+    if dropped_fp or dropped_low_conf or dropped_info:
+        log.info(
+            "AI discovery prefilter: -%d FP, -%d low-conf, -%d INFO (kept %d/%d)",
+            dropped_fp, dropped_low_conf, dropped_info, len(keep), len(findings),
+        )
+    return keep
+
+
 def _render_discovery_prompt(
     *,
     findings: list[Finding],
     existing_chains: list[AttackChain],
     graph_edges: list[tuple[str, str, str]],
-) -> str:
-    """Compose the user-content payload for the discovery request."""
+    keep_node_ids: Optional[set[str]] = None,
+) -> tuple[str, str]:
+    """Compose the user-content payload for the discovery request.
+
+    Returns a (static_block, instruction_tail) pair so the caller can attach
+    a cache-control breakpoint between them. The static block holds the
+    findings + chains + graph (the bulk of the tokens, stable across re-runs
+    within the cache TTL); the tail is the short "now propose chains" cue.
+
+    Compression:
+      * ARNs in the graph block are replaced with short aliases (r1, r2…)
+        defined once in a legend. ARNs are ~80 chars each; on a typical
+        150-edge graph this is the single biggest character saving.
+      * If *keep_node_ids* is provided, edges whose endpoints are both
+        outside that set are dropped before rendering.
+      * Edges are grouped by relationship so the model sees structured
+        compact lists rather than one-line-per-edge noise.
+    """
     parts: list[str] = []
 
     parts.append("## FINDINGS")
@@ -290,20 +407,58 @@ def _render_discovery_prompt(
     else:
         parts.append("(none)")
 
+    # ---- Graph block: alias ARNs, prune, group ----
     parts.append("")
-    parts.append("## RESOURCE GRAPH EDGES")
-    if graph_edges:
-        for src, dst, rel in graph_edges:
-            parts.append(f"{src} --[{rel}]--> {dst}")
-    else:
+    parts.append("## RESOURCE GRAPH")
+    if not graph_edges:
         parts.append("(no edges recorded)")
+    else:
+        # 1. Optionally prune to the relevant subgraph.
+        if keep_node_ids is not None:
+            pruned = [
+                (s, d, r) for (s, d, r) in graph_edges
+                if s in keep_node_ids or d in keep_node_ids
+            ]
+        else:
+            pruned = list(graph_edges)
 
-    parts.append("")
-    parts.append(
-        "Propose novel attack chains that the rule-based correlator missed. "
+        # 2. Build alias table — only for ARNs that actually appear in pruned
+        #    edges (legend + edge-list both shrink together).
+        endpoints: list[str] = []
+        seen_endpoints: set[str] = set()
+        for src, dst, _ in pruned:
+            for arn in (src, dst):
+                if arn not in seen_endpoints:
+                    seen_endpoints.add(arn)
+                    endpoints.append(arn)
+        alias_for: dict[str, str] = {
+            arn: f"r{i + 1}" for i, arn in enumerate(endpoints)
+        }
+
+        # 3. Render legend.
+        parts.append(
+            f"Aliases (r<n> = ARN). {len(endpoints)} nodes, "
+            f"{len(pruned)} edges (pruned from {len(graph_edges)})."
+        )
+        for arn, alias in alias_for.items():
+            parts.append(f"{alias} = {arn}")
+
+        # 4. Group edges by relationship.
+        parts.append("")
+        parts.append("Edges (grouped by relationship):")
+        by_rel: dict[str, list[tuple[str, str]]] = {}
+        for src, dst, rel in pruned:
+            by_rel.setdefault(rel, []).append((alias_for[src], alias_for[dst]))
+        for rel in sorted(by_rel):
+            pairs = ", ".join(f"{s}->{d}" for s, d in by_rel[rel])
+            parts.append(f"{rel}: {pairs}")
+
+    static_block = "\n".join(parts)
+    instruction_tail = (
+        "\n\nPropose novel attack chains that the rule-based correlator missed. "
         "Return an empty list if nothing meets the bar."
     )
-    return "\n".join(parts)
+    return static_block, instruction_tail
 
 
 def _one_line(text: str) -> str:

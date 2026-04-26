@@ -1,7 +1,7 @@
 """
 Thin async wrapper around the Anthropic SDK.
 
-Centralises three concerns so the rest of the AI subsystem does not have to
+Centralises four concerns so the rest of the AI subsystem does not have to
 care about them:
 
 1. **Graceful degradation** — if the API key is missing or the ``ai`` config
@@ -12,7 +12,11 @@ care about them:
    tenant's Anthropic rate budget.
 3. **Retry logic** — transient errors (rate limit, network, 5xx) are retried
    with exponential backoff; permanent errors (bad request, auth) bubble up
-   immediately so they aren't silently masked.
+   immediately so they aren't silently masked. Per-call retry override lets
+   the discovery path opt out of multi-retry token amplification.
+4. **Token telemetry** — every parsed response's ``usage`` is captured and
+   persisted to the ``ai_usage`` table so per-run cost is queryable without
+   external tooling.
 """
 
 from __future__ import annotations
@@ -20,15 +24,54 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Optional, Type, TypeVar
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional, Type, TypeVar
 
 from pydantic import BaseModel
 
 from ..config import AIConfig
 
+if TYPE_CHECKING:
+    from ..db import FindingsDB
+
 log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+@dataclass
+class TokenUsage:
+    """Running tally of token consumption for one ClaudeClient instance."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
+    calls: int = 0
+    by_call_site: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def add(
+        self,
+        *,
+        call_site: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation_tokens: int,
+        cache_read_tokens: int,
+    ) -> None:
+        self.calls += 1
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.cache_creation_tokens += cache_creation_tokens
+        self.cache_read_tokens += cache_read_tokens
+        site = self.by_call_site.setdefault(
+            call_site,
+            {"calls": 0, "input": 0, "output": 0, "cache_create": 0, "cache_read": 0},
+        )
+        site["calls"] += 1
+        site["input"] += input_tokens
+        site["output"] += output_tokens
+        site["cache_create"] += cache_creation_tokens
+        site["cache_read"] += cache_read_tokens
 
 
 class ClaudeUnavailable(RuntimeError):
@@ -42,7 +85,7 @@ class ClaudeClient:
     disabled, which is the signal that callers should skip AI work.
     """
 
-    def __init__(self, cfg: AIConfig) -> None:
+    def __init__(self, cfg: AIConfig, db: Optional["FindingsDB"] = None) -> None:
         # Lazy import so the orchestrator doesn't require the SDK unless AI
         # is actually enabled in the config.
         from anthropic import AsyncAnthropic
@@ -50,18 +93,25 @@ class ClaudeClient:
         self._cfg = cfg
         self._client = AsyncAnthropic(api_key=cfg.api_key)
         self._semaphore = asyncio.Semaphore(cfg.max_parallel_requests)
+        self._db = db
+        self.usage = TokenUsage()
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_config(cls, cfg: AIConfig) -> Optional["ClaudeClient"]:
+    def from_config(
+        cls, cfg: AIConfig, db: Optional["FindingsDB"] = None
+    ) -> Optional["ClaudeClient"]:
         """Build a client or return None if AI should be skipped.
 
         AI is skipped when:
           * ``ai.enabled`` is False, or
           * ``ai.api_key`` is missing / empty (e.g. ``ANTHROPIC_API_KEY`` unset).
+
+        Pass ``db`` to enable per-call token-usage persistence to the
+        ``ai_usage`` table.
         """
         if not cfg.enabled:
             log.info("AI subsystem disabled via config — skipping triage and discovery")
@@ -72,7 +122,7 @@ class ClaudeClient:
                 "discovery. Set ANTHROPIC_API_KEY to enable."
             )
             return None
-        return cls(cfg)
+        return cls(cfg, db=db)
 
     # ------------------------------------------------------------------
     # Request helpers
@@ -86,6 +136,9 @@ class ClaudeClient:
         user_content: list[dict] | str,
         max_tokens: int = 8192,
         model: Optional[str] = None,
+        call_site: str = "unknown",
+        effort: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> T:
         """Send a structured-output request and return the parsed Pydantic model.
 
@@ -96,9 +149,15 @@ class ClaudeClient:
         mark stable prefixes with ``cache_control`` for prompt-cache hits.
 
         Pass ``model`` to override the default primary model (used by
-        discovery for the Opus critical path).
+        discovery for the Opus critical path). Pass ``effort`` to override the
+        configured Opus thinking effort for this call only — discovery uses
+        this to drop from "high" to "medium" without affecting triage. Pass
+        ``max_retries`` to cap retry amplification for token-heavy calls.
+
+        ``call_site`` is the tag used in ai_usage rows + log lines.
         """
         chosen_model = model or self._cfg.primary_model
+        chosen_effort = effort or self._cfg.effort
         params: dict = {
             "model": chosen_model,
             "max_tokens": max_tokens,
@@ -109,12 +168,16 @@ class ClaudeClient:
         # Adaptive thinking + effort are Opus 4.x features; Sonnet rejects them.
         if "opus" in chosen_model.lower():
             params["thinking"] = {"type": "adaptive"}
-            params["output_config"] = {"effort": self._cfg.effort}
+            params["output_config"] = {"effort": chosen_effort}
 
         async with self._semaphore:
             result = await self._with_retries(
-                lambda: self._client.messages.parse(**params)
+                lambda: self._client.messages.parse(**params),
+                max_retries=max_retries,
             )
+
+        await self._record_usage(result, call_site=call_site, model=chosen_model)
+
         # messages.parse() returns a ParsedMessage; parsed_output holds the
         # validated Pydantic instance (or None if the model refused / failed
         # to conform to the schema).
@@ -126,11 +189,59 @@ class ClaudeClient:
         return parsed
 
     # ------------------------------------------------------------------
+    # Telemetry
+    # ------------------------------------------------------------------
+
+    async def _record_usage(self, result: object, *, call_site: str, model: str) -> None:
+        """Capture .usage from a ParsedMessage and persist + tally it."""
+        usage = getattr(result, "usage", None)
+        if usage is None:
+            return
+        # The SDK exposes these as attributes on the Usage object.
+        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        cache_create = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+
+        self.usage.add(
+            call_site=call_site,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_creation_tokens=cache_create,
+            cache_read_tokens=cache_read,
+        )
+        log.info(
+            "AI[%s|%s] in=%d out=%d cache_create=%d cache_read=%d",
+            call_site, model, in_tok, out_tok, cache_create, cache_read,
+        )
+
+        if self._db is None:
+            return
+        try:
+            run_id = await self._db.get_or_create_run_id()
+            await self._db.record_ai_usage(
+                run_id=run_id,
+                call_site=call_site,
+                model=model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                cache_creation_tokens=cache_create,
+                cache_read_tokens=cache_read,
+            )
+        except Exception as exc:
+            # Telemetry must never break the call path.
+            log.debug("Failed to persist ai_usage row: %s", exc)
+
+    # ------------------------------------------------------------------
     # Retry loop
     # ------------------------------------------------------------------
 
-    async def _with_retries(self, call):
-        """Retry *call* on transient Anthropic errors with exponential backoff."""
+    async def _with_retries(self, call, *, max_retries: Optional[int] = None):
+        """Retry *call* on transient Anthropic errors with exponential backoff.
+
+        Pass ``max_retries`` to override the per-client default — discovery
+        sets this to 1 so a 16K-token call doesn't silently triple the bill.
+        """
         from anthropic import (
             APIConnectionError,
             APITimeoutError,
@@ -138,6 +249,7 @@ class ClaudeClient:
             RateLimitError,
         )
 
+        budget = max_retries if max_retries is not None else self._cfg.max_retries
         transient = (RateLimitError, APIConnectionError, APITimeoutError, InternalServerError)
         attempt = 0
         while True:
@@ -145,7 +257,7 @@ class ClaudeClient:
                 return await call()
             except transient as exc:
                 attempt += 1
-                if attempt > self._cfg.max_retries:
+                if attempt > budget:
                     log.error(
                         "Anthropic request failed after %d retries: %s", attempt - 1, exc
                     )
@@ -154,6 +266,6 @@ class ClaudeClient:
                 delay = min(30.0, (2 ** (attempt - 1)) + random.random())
                 log.warning(
                     "Anthropic transient error (attempt %d/%d): %s — retrying in %.1fs",
-                    attempt, self._cfg.max_retries, exc, delay,
+                    attempt, budget, exc, delay,
                 )
                 await asyncio.sleep(delay)

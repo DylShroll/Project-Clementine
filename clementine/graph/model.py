@@ -15,6 +15,7 @@ class AWSNodeType(str, Enum):
     # Compute
     EC2_INSTANCE = "ec2_instance"
     LAMBDA_FUNCTION = "lambda_function"
+    LAMBDA_LAYER = "lambda_layer"
     EKS_POD = "eks_pod"
     EKS_NODE = "eks_node"
     # Storage / secrets
@@ -22,13 +23,25 @@ class AWSNodeType(str, Enum):
     RDS_INSTANCE = "rds_instance"
     SECRETS_MANAGER = "secrets_manager"
     SSM_PARAMETER = "ssm_parameter"
+    KMS_KEY = "kms_key"
+    # Messaging
+    SNS_TOPIC = "sns_topic"
+    SQS_QUEUE = "sqs_queue"
     # Networking
     VPC = "vpc"
     SECURITY_GROUP = "security_group"
     VPC_ENDPOINT = "vpc_endpoint"
+    VPC_PEERING = "vpc_peering"
+    TRANSIT_GATEWAY = "transit_gateway"
+    # Edge / API
+    API_GATEWAY_ROUTE = "api_gateway_route"
+    CLOUDFRONT_DISTRIBUTION = "cloudfront_distribution"
+    WAF_ACL = "waf_acl"
     # Bridge / special
     WEB_ENDPOINT = "web_endpoint"
     IMDS = "imds"
+    # Wildcard placeholder for `Resource: "*"` in IAM policies
+    WILDCARD = "wildcard"
 
 
 class AWSEdgeType(str, Enum):
@@ -42,11 +55,31 @@ class AWSEdgeType(str, Enum):
     # Network
     ROUTES_TO = "ROUTES_TO"
     INTERNET_FACING = "INTERNET_FACING"
+    PEERED_WITH = "PEERED_WITH"
     # Exploit
     SSRF_REACHABLE = "SSRF_REACHABLE"
     # EKS
     IRSA_BOUND = "IRSA_BOUND"
     OIDC_TRUSTS = "OIDC_TRUSTS"
+    # Edge / data plane
+    INVOKES = "INVOKES"               # API Gateway → Lambda, EventBridge → target
+    ENCRYPTS_WITH = "ENCRYPTS_WITH"   # resource → KMS key
+    KEY_POLICY_GRANTS = "KEY_POLICY_GRANTS"  # principal → KMS key (with action)
+    SUBSCRIBES_TO = "SUBSCRIBES_TO"   # SQS/Lambda → SNS topic
+    USES_LAYER = "USES_LAYER"         # Lambda → layer
+    WAF_PROTECTS = "WAF_PROTECTS"     # WAF ACL → distribution/ALB/API
+
+
+# Edges that an attacker can reasonably traverse during exploitation, used by
+# the `via_edges` correlation pattern shortcut and `principals_reaching`.
+IAM_TRAVERSAL_EDGES: frozenset[str] = frozenset({
+    AWSEdgeType.CAN_ASSUME.value,
+    AWSEdgeType.CAN_PASS_ROLE.value,
+    AWSEdgeType.HAS_PERMISSION.value,
+    AWSEdgeType.IRSA_BOUND.value,
+    AWSEdgeType.OIDC_TRUSTS.value,
+    AWSEdgeType.KEY_POLICY_GRANTS.value,
+})
 
 
 @dataclass

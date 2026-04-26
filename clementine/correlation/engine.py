@@ -69,6 +69,12 @@ class PivotCondition:
     category: Optional[str] = None
     relationship: Optional[str] = None  # same_compute_resource | same_account | etc.
     severity: Optional[list[str]] = None  # For any_finding type
+    # Edge-typed traversal constraint. When set, the relationship is treated
+    # as "reachable from entry to pivot via *only* these edge types within
+    # via_max_hops". Lets patterns express e.g. "principal escalates to
+    # admin role via CAN_ASSUME / CAN_PASS_ROLE only" instead of any-edge.
+    via_edges: Optional[list[str]] = None
+    via_max_hops: int = 4
 
 
 @dataclass
@@ -94,13 +100,25 @@ class AttackPattern:
 
         pivots = []
         for p in data.get("pivot", []):
+            rel = p.get("relationship")
+            via_edges: Optional[list[str]] = None
+            via_max_hops = 4
+            # Structured relationship: {via_edges: [...], max_hops: N}
+            if isinstance(rel, dict):
+                via_edges = rel.get("via_edges")
+                via_max_hops = int(rel.get("max_hops", via_max_hops))
+                # Keep the original relationship string available if the YAML
+                # supplied one alongside the structured form (rare).
+                rel = rel.get("name")
             pivots.append(PivotCondition(
                 type=p.get("type", "infra_finding"),
                 check=p.get("check"),
                 wstg=p.get("wstg"),
                 category=p.get("category"),
-                relationship=p.get("relationship"),
+                relationship=rel,
                 severity=p.get("severity"),
+                via_edges=via_edges,
+                via_max_hops=via_max_hops,
             ))
 
         # Normalise remediation_priority to a list of dicts
@@ -294,10 +312,13 @@ class CorrelationEngine:
                 if pivot.category.lower() not in (f.title or "").lower():
                     continue
 
-            # Relationship constraint — verify via resource_graph
-            if pivot.relationship and entry.resource_id and f.resource_id:
+            # Relationship constraint — verify via the knowledge graph.
+            needs_relationship_check = (
+                pivot.relationship or pivot.via_edges
+            ) and entry.resource_id and f.resource_id
+            if needs_relationship_check:
                 related = await self._are_resources_related(
-                    entry.resource_id, f.resource_id, pivot.relationship
+                    entry.resource_id, f.resource_id, pivot,
                 )
                 if not related:
                     continue
@@ -307,14 +328,30 @@ class CorrelationEngine:
         return candidates
 
     async def _are_resources_related(
-        self, src_id: str, dst_id: str, relationship: str
+        self, src_id: str, dst_id: str, pivot: PivotCondition,
     ) -> bool:
-        """Check whether two resources satisfy the relationship constraint.
+        """Check whether two resources satisfy a pivot's relationship constraint.
 
-        Uses the resource_graph table for graph-based checks.
-        For 'same_account' / 'same_compute_resource', falls back to string
-        heuristics when the graph is sparse.
+        Resolves three forms in order:
+          1. Edge-typed multi-hop (``via_edges``) when the YAML supplies one.
+          2. Named shortcuts: ``same_account`` / ``same_compute_resource``.
+          3. Generic any-edge multi-hop via the knowledge graph; falls back
+             to the legacy 1-hop SQLite lookup if no graph is available.
         """
+        # 1. Structured edge-typed traversal — the precise form patterns now use.
+        if pivot.via_edges:
+            if self._analyzer is None:
+                # Without a graph we can't honour an edge-typed constraint
+                # without false positives — fail the match instead of silently
+                # downgrading to any-edge.
+                return False
+            return self._analyzer.are_related_multi_hop(
+                src_id, dst_id,
+                max_hops=pivot.via_max_hops,
+                edge_types=pivot.via_edges,
+            )
+
+        relationship = pivot.relationship
         # Same-account: all findings in the store share an account if account IDs match
         if relationship == "same_account":
             return True  # If we're here, all findings are from the same assessment

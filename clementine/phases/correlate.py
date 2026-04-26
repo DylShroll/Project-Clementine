@@ -96,12 +96,14 @@ async def run_correlation(
         log.info("[Phase 4] AI chain discovery disabled — skipping")
         return
 
-    client = ClaudeClient.from_config(cfg.ai)
+    client = ClaudeClient.from_config(cfg.ai, db=db)
     if client is None:
         log.info("[Phase 4] Claude client unavailable — skipping AI discovery")
         return
 
-    ai_chains = await discover_chains(client=client, cfg=cfg.ai, db=db)
+    ai_chains = await discover_chains(
+        client=client, cfg=cfg.ai, db=db, analyzer=analyzer
+    )
     log.info(
         "[Phase 4] Correlation complete — %d rule-based + %d AI-discovered chains",
         rule_chains, len(ai_chains),

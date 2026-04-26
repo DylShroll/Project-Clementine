@@ -223,6 +223,7 @@ async def _triage_batch(
         system=system_blocks,
         user_content=user_text,
         max_tokens=8192,
+        call_site="triage_batch",
     )
 
 

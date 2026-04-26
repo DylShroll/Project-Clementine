@@ -1,0 +1,48 @@
+# Pattern: Compromised principal escalates to admin via IAM CAN_ASSUME / CAN_PASS_ROLE chain
+#
+# This pattern exercises the new edge-typed `via_edges` constraint: it only
+# matches when the entry-finding's principal can reach the admin-role pivot
+# through CAN_ASSUME or CAN_PASS_ROLE edges within 3 hops. The old any-edge
+# multi-hop check would also match topology-coincidental adjacency (shared
+# VPC, shared SG, etc.) and produce false-positive chains; the edge-typed
+# constraint requires a real IAM traversal.
+#
+# Requires: live IAM enumeration (clementine.graph.iam_enrichment) so the
+# CAN_ASSUME / CAN_PASS_ROLE edges actually exist in graph_edges.
+
+pattern:
+  name: "IAM assume-chain reaches admin role"
+  severity: CRITICAL
+
+entry:
+  type: infra_finding
+  check: iam-overprivileged-principal
+
+pivot:
+  - type: infra_finding
+    check: iam-admin-role-exists
+    relationship:
+      via_edges:
+        - CAN_ASSUME
+        - CAN_PASS_ROLE
+      max_hops: 3
+
+impact: >
+  A non-admin principal flagged as over-privileged can reach an admin-equivalent
+  role through a short chain of CAN_ASSUME / CAN_PASS_ROLE edges (≤3 hops).
+  Because the constraint follows real IAM edges only, the match is high
+  confidence — there is a concrete trust-policy or PassRole grant connecting
+  the two principals, not just shared infrastructure.
+
+remediation_priority:
+  - summary: "Audit the trust policies on every role in the discovered chain and remove the unnecessary AssumeRole / PassRole grants"
+    effort: MEDIUM
+    breaks_chain: true
+
+  - summary: "Add SCP guardrails that deny iam:PassRole with Resource: \"*\" account-wide"
+    effort: LOW
+    breaks_chain: false
+
+  - summary: "Attach permission boundaries to admin-equivalent roles so even successful assumption can't grant unbounded permissions"
+    effort: MEDIUM
+    breaks_chain: false

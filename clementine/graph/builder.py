@@ -38,18 +38,39 @@ _ARN_SERVICE_MAP: dict[str, AWSNodeType] = {
     "eks":                  AWSNodeType.EKS_NODE,
     "vpc":                  AWSNodeType.VPC,
     "elasticloadbalancing": AWSNodeType.VPC_ENDPOINT,
-    "apigateway":           AWSNodeType.VPC_ENDPOINT,
+    "apigateway":           AWSNodeType.API_GATEWAY_ROUTE,
+    "kms":                  AWSNodeType.KMS_KEY,
+    "sns":                  AWSNodeType.SNS_TOPIC,
+    "sqs":                  AWSNodeType.SQS_QUEUE,
+    "cloudfront":           AWSNodeType.CLOUDFRONT_DISTRIBUTION,
+    "wafv2":                AWSNodeType.WAF_ACL,
+    "waf":                  AWSNodeType.WAF_ACL,
+    "ec2":                  AWSNodeType.EC2_INSTANCE,
 }
 
 # ARN resource-type sub-string → AWSNodeType (checked after service prefix)
 _ARN_RESOURCE_MAP: dict[str, AWSNodeType] = {
-    "security-group": AWSNodeType.SECURITY_GROUP,
-    "security_group": AWSNodeType.SECURITY_GROUP,
-    "vpc":            AWSNodeType.VPC,
-    "subnet":         AWSNodeType.VPC,
-    "network-acl":    AWSNodeType.VPC,
-    "volume":         AWSNodeType.EC2_INSTANCE,
-    "instance":       AWSNodeType.EC2_INSTANCE,
+    "security-group":      AWSNodeType.SECURITY_GROUP,
+    "security_group":      AWSNodeType.SECURITY_GROUP,
+    "vpc-peering":         AWSNodeType.VPC_PEERING,
+    "vpc":                 AWSNodeType.VPC,
+    "subnet":              AWSNodeType.VPC,
+    "network-acl":         AWSNodeType.VPC,
+    "transit-gateway":     AWSNodeType.TRANSIT_GATEWAY,
+    "volume":              AWSNodeType.EC2_INSTANCE,
+    "instance":            AWSNodeType.EC2_INSTANCE,
+}
+
+# IAM-only sub-resource override (otherwise everything iam:* maps to IAM_ROLE).
+_IAM_RESOURCE_MAP: dict[str, AWSNodeType] = {
+    "user/":   AWSNodeType.IAM_USER,
+    "role/":   AWSNodeType.IAM_ROLE,
+}
+
+# Lambda-only sub-resource override.
+_LAMBDA_RESOURCE_MAP: dict[str, AWSNodeType] = {
+    "layer:":     AWSNodeType.LAMBDA_LAYER,
+    "function:":  AWSNodeType.LAMBDA_FUNCTION,
 }
 
 
@@ -65,20 +86,38 @@ def _infer_node_type(resource_type: str | None, resource_id: str | None) -> AWSN
         service = parts[2] if len(parts) > 2 else ""
         resource = parts[5] if len(parts) > 5 else ""
 
-        # Service-level match
-        if service in _ARN_SERVICE_MAP:
-            return _ARN_SERVICE_MAP[service]
+        # IAM sub-resource: distinguish role vs user vs other
+        if service == "iam":
+            for key, ntype in _IAM_RESOURCE_MAP.items():
+                if key in resource:
+                    return ntype
+            return AWSNodeType.IAM_ROLE
 
-        # EC2 sub-resource match
+        # Lambda sub-resource: distinguish function vs layer
+        if service == "lambda":
+            for key, ntype in _LAMBDA_RESOURCE_MAP.items():
+                if key in resource:
+                    return ntype
+            return AWSNodeType.LAMBDA_FUNCTION
+
+        # EC2 sub-resource match (peering, transit-gw, security-group, …)
         if service == "ec2":
             for key, ntype in _ARN_RESOURCE_MAP.items():
                 if key in resource:
                     return ntype
             return AWSNodeType.EC2_INSTANCE
 
+        # Service-level match
+        if service in _ARN_SERVICE_MAP:
+            return _ARN_SERVICE_MAP[service]
+
     # 3. URL → web endpoint
     if resource_id and (resource_id.startswith("http://") or resource_id.startswith("https://")):
         return AWSNodeType.WEB_ENDPOINT
+
+    # 4. Wildcard placeholder (used by IAM enumeration for `Resource: "*"`)
+    if resource_id == "*":
+        return AWSNodeType.WILDCARD
 
     return AWSNodeType.EC2_INSTANCE
 
@@ -97,6 +136,13 @@ _RELATIONSHIP_MAP: dict[str, AWSEdgeType] = {
     "HOSTS_APP": AWSEdgeType.HOSTS_APP,
     "IRSA_BOUND": AWSEdgeType.IRSA_BOUND,
     "OIDC_TRUSTS": AWSEdgeType.OIDC_TRUSTS,
+    "PEERED_WITH": AWSEdgeType.PEERED_WITH,
+    "INVOKES": AWSEdgeType.INVOKES,
+    "ENCRYPTS_WITH": AWSEdgeType.ENCRYPTS_WITH,
+    "KEY_POLICY_GRANTS": AWSEdgeType.KEY_POLICY_GRANTS,
+    "SUBSCRIBES_TO": AWSEdgeType.SUBSCRIBES_TO,
+    "USES_LAYER": AWSEdgeType.USES_LAYER,
+    "WAF_PROTECTS": AWSEdgeType.WAF_PROTECTS,
 }
 
 # Category substrings that indicate SSRF-type findings
@@ -155,18 +201,24 @@ class GraphBuilder:
     # ------------------------------------------------------------------
 
     async def build_from_db(self) -> nx.DiGraph:
-        """Reconstruct the graph from persisted graph_nodes + resource_graph rows."""
+        """Reconstruct the graph from persisted graph_nodes + edges.
+
+        UNIONs the legacy ``resource_graph`` adjacency table with the richer
+        ``graph_edges`` table (which carries finding_ids, is_wildcard, action
+        lists, etc.). Edge properties from ``graph_edges`` are stamped onto
+        the NetworkX edge so query-time consumers can use them without a
+        second DB round-trip.
+        """
         # 1. Persisted nodes
         persisted = await self._db.get_graph_nodes()
         for node in persisted:
             self._add_node(node)
 
-        # 2. Resource-graph adjacency edges (read-only, no lock needed)
+        # 2. Legacy adjacency table (read-only, no lock needed)
         async with self._db._conn.execute(
             "SELECT source_arn, target_arn, relationship FROM resource_graph"
         ) as cur:
             rows = await cur.fetchall()
-
         for row in rows:
             src = row["source_arn"]
             dst = row["target_arn"]
@@ -174,10 +226,28 @@ class GraphBuilder:
             edge_type = _RELATIONSHIP_MAP.get(rel, AWSEdgeType.ROUTES_TO)
             self._add_edge(src, dst, edge_type)
 
+        # 3. Rich edges table — same structure but with provenance properties.
+        rich_edges = await self._db.get_graph_edges()
+        for e in rich_edges:
+            edge_type_str = e["edge_type"]
+            try:
+                edge_type = AWSEdgeType(edge_type_str)
+            except ValueError:
+                # Unknown edge_type — skip rather than guess.
+                continue
+            self._add_edge(e["source_id"], e["target_id"], edge_type)
+            # Stamp the rich properties onto the in-memory edge so query
+            # helpers (paths_between with edge_types filter, etc.) can read
+            # them without going back to the DB.
+            self._graph.edges[e["source_id"], e["target_id"]].update(
+                {"properties": e["properties"]}
+            )
+
         log.debug(
-            "[Graph] Reconstructed from DB: %d nodes, %d edges",
+            "[Graph] Reconstructed from DB: %d nodes, %d edges (+%d rich)",
             self._graph.number_of_nodes(),
             self._graph.number_of_edges(),
+            len(rich_edges),
         )
         return self._graph
 
@@ -262,9 +332,15 @@ class GraphBuilder:
         mcp: "MCPRegistry",
         limiter: "RateLimiter",
     ) -> None:
-        """Query cloud_audit for IAM/EC2/Lambda relationships (best-effort)."""
-        # We use findings already in the DB as the source of truth — the cloud_audit
-        # MCP doesn't expose a structured IAM-graph API, so we derive edges from
-        # resource_graph rows that were populated during Phase 2.
-        # This method is a hook for future direct IAM enumeration.
-        log.debug("[Graph] cloud_audit enrichment: using DB-derived edges (no IAM API calls)")
+        """Run live IAM enumeration via the cloud_audit MCP server.
+
+        Replaces the previous stub. The IAM pass populates CAN_ASSUME,
+        OIDC_TRUSTS, HAS_PERMISSION, and CAN_PASS_ROLE edges directly into
+        ``graph_edges`` (with provenance) and into the in-memory NetworkX
+        graph. Failures in any sub-pass are recorded in
+        ``enrichment_status`` so report consumers can disclose the
+        completeness of the topology rather than silently ship a partial
+        graph.
+        """
+        from .iam_enrichment import enrich_iam
+        await enrich_iam(self, db=self._db, mcp=mcp, limiter=limiter)

@@ -89,6 +89,7 @@ class Orchestrator:
             async with self._mcp:
                 await self._setup_mcp_servers()
                 await self._run_phases()
+            await self._print_ai_usage_summary()
         except Exception as exc:
             import anyio
             # Shield the FAILED-state write from anyio's teardown cancellation
@@ -123,9 +124,14 @@ class Orchestrator:
             if restored in (AssessmentState.COMPLETE, AssessmentState.FAILED):
                 self._state = AssessmentState.INITIALIZED
                 log.info("Previous run ended with %s — starting fresh assessment", restored)
+                # New logical run: rotate run_id so token telemetry is partitioned.
+                await self._db.reset_run_id()
             else:
                 self._state = restored
                 log.info("Resuming from state: %s", self._state)
+        else:
+            # First-ever run for this DB.
+            await self._db.get_or_create_run_id()
 
         # Import phases lazily so each module is only loaded when needed
         from .phases.recon import run_recon
@@ -227,6 +233,43 @@ class Orchestrator:
         AssessmentState.REPORTING,
         AssessmentState.COMPLETE,
     ]
+
+    async def _print_ai_usage_summary(self) -> None:
+        """Print a per-call-site token usage summary at the end of a run.
+
+        Pulled from the ai_usage table so it covers every Claude call across
+        every phase (triage + discovery today; future AI phases automatically
+        appear here without code changes).
+        """
+        try:
+            run_id = await self._db.get_or_create_run_id()
+            rows = await self._db.get_ai_usage_summary(run_id)
+        except Exception as exc:
+            log.debug("Skipping AI usage summary: %s", exc)
+            return
+        if not rows:
+            return
+
+        total_in = sum(r["input_tokens"] for r in rows)
+        total_out = sum(r["output_tokens"] for r in rows)
+        total_cache_read = sum(r["cache_read_tokens"] for r in rows)
+
+        log.info("=== AI token usage (run_id=%s) ===", run_id)
+        log.info(
+            "%-22s %-22s %5s %12s %12s %12s",
+            "call_site", "model", "calls", "input", "output", "cache_read",
+        )
+        for r in rows:
+            log.info(
+                "%-22s %-22s %5d %12d %12d %12d",
+                r["call_site"], r["model"], r["calls"],
+                r["input_tokens"], r["output_tokens"], r["cache_read_tokens"],
+            )
+        log.info(
+            "%-22s %-22s %5s %12d %12d %12d",
+            "TOTAL", "", "",
+            total_in, total_out, total_cache_read,
+        )
 
     def _is_state_past(self, state: AssessmentState) -> bool:
         """Return True if the given state has already been completed."""
