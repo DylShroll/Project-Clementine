@@ -81,19 +81,28 @@ orchestrator:
   pause_between_phases: false           # Set true for interactive step-through
 
 # ---------------------------------------------------------------------------
-# AI — Anthropic Claude for finding triage and novel attack-chain discovery
+# AI — Amazon Bedrock Claude for finding triage and novel attack-chain discovery
 # ---------------------------------------------------------------------------
-# If ANTHROPIC_API_KEY is unset (or ai.enabled is false), the triage phase is
-# skipped and correlation runs rule-based only, so Clementine still produces a
-# full report. AI simply makes findings sharper and chains richer when enabled.
+# Authentication uses the standard AWS credential chain — no Anthropic API key
+# is required. The IAM identity running Clementine needs:
+#   bedrock:InvokeModel on the primary_model and critical_model ARNs
+#   bedrock:InvokeModelWithResponseStream (if streaming is enabled)
+#
+# If ai.enabled is false, the triage phase is skipped and correlation runs
+# rule-based only; Clementine still produces a full report without AI.
+#
+# Model IDs are Amazon Bedrock cross-region inference profile identifiers.
+# Verify that each model is available in your AWS account and region via
+# the Bedrock console before running. On-demand throughput model IDs
+# (e.g. anthropic.claude-sonnet-4-6-...-v1:0) also work as alternatives.
 ai:
   enabled: true
-  api_key: "${ANTHROPIC_API_KEY}"
-  primary_model: "claude-sonnet-4-6"   # Heavy phases: recon, app-test, triage
-  critical_model: "claude-opus-4-7"    # Reserved for Phase 4 chain discovery
+  aws_region: "us-east-1"                              # Bedrock-enabled region
+  primary_model: "us.anthropic.claude-sonnet-4-6-20251101"   # Recon, app-test, triage
+  critical_model: "us.anthropic.claude-opus-4-7-20251101"    # Phase 4 chain discovery
   effort: "high"                       # Opus-only: low | medium | high | xhigh | max
-  max_parallel_requests: 4        # Parallel Anthropic calls across AI phases
-  max_retries: 3                  # Transient-error retry budget (rate limits, 5xx)
+  max_parallel_requests: 4        # Parallel Bedrock calls across AI phases
+  max_retries: 3                  # Transient-error retry budget (throttling, 5xx)
 
   # Phase 3.5 — per-finding confidence scoring and false-positive flagging.
   triage:

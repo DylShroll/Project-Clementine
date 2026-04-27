@@ -19,7 +19,7 @@ Project Clementine runs five sequential phases:
 | 1 — Recon | Crawls endpoints, fingerprints tech stack, maps AWS resources from response headers |
 | 2 — AWS Audit | cloud-audit and Prowler run in parallel; findings deduplicated and normalised. Builds the AWS knowledge graph: principals, compute, storage, and network nodes with live IAM trust and permission edges |
 | 3 — App Test | Full OWASP WSTG test suite via AutoPentest AI; Playwright validates DOM-based findings |
-| 3.5 — AI Triage | Claude scores each finding: confidence, false-positive flag, and rationale. Skipped when `ANTHROPIC_API_KEY` is unset |
+| 3.5 — AI Triage | Claude (via Amazon Bedrock) scores each finding: confidence, false-positive flag, and rationale. Skipped when `ai.enabled` is false |
 | 4 — Correlation | Rule-based pattern engine (47 patterns) fuses app + infra findings into compound attack chains using edge-typed multi-hop graph traversal. Bridges web-app SSRF findings into the AWS graph. Optional AI chain discovery proposes novel paths |
 | 5 — Reporting | HTML (with interactive Attack Graph), JSON, SARIF, Markdown, and optional AWS Security Hub push |
 
@@ -76,7 +76,7 @@ Nodes are colour-bordered by the severity of their linked findings. Drag to pan.
 
 ## Token telemetry and cost control
 
-Every Claude API call (triage batches and discovery) is instrumented with per-call usage metrics. Totals are persisted to the `ai_usage` table and printed at the end of each `clementine run`:
+Every Bedrock inference call (triage batches and discovery) is instrumented with per-call usage metrics. Totals are persisted to the `ai_usage` table and printed at the end of each `clementine run`:
 
 ```text
 AI usage summary
@@ -121,7 +121,7 @@ The AI discovery phase uses several techniques to reduce the per-run token cost:
 | `uv` / `uvx` | cloud-audit and Prowler MCP servers | `pip install uv` |
 | AWS CLI | Configured profile with read-only audit permissions | `pip install awscli` |
 | Prowler CLI | Compliance scanning (optional — gracefully skipped if absent) | `pip install prowler` |
-| Anthropic API key | AI triage and novel-chain discovery (optional) | Set `ANTHROPIC_API_KEY` env var |
+| Amazon Bedrock access | AI triage and novel-chain discovery (optional — skipped when `ai.enabled: false`) | IAM policy — see below |
 
 ### AWS audit permissions
 
@@ -138,6 +138,28 @@ aws iam attach-user-policy \
 ```
 
 **Never grant write permissions to the audit credentials.**
+
+### Amazon Bedrock permissions
+
+The same IAM identity also needs permission to invoke Claude models via Bedrock. Create an inline or managed policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-6-*",
+        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-opus-4-7-*"
+      ]
+    }
+  ]
+}
+```
+
+Before running, verify that the cross-region inference profiles for your chosen models are enabled in your AWS account via **Bedrock console → Model access**. The model IDs in `clementine.yaml` must match exactly what is shown there.
 
 ---
 
@@ -185,7 +207,7 @@ Set all credentials as environment variables — **never put secrets directly in
 ```bash
 export APP_USERNAME="testuser"
 export APP_PASSWORD="testpass"
-export AWS_AUDIT_PROFILE="security-audit"
+export AWS_AUDIT_PROFILE="security-audit"   # profile with SecurityAudit + Bedrock invoke permissions
 export AWS_ACCOUNT_ID="123456789012"
 ```
 
@@ -311,10 +333,10 @@ jobs:
         env:
           APP_USERNAME: ${{ secrets.TEST_APP_USERNAME }}
           APP_PASSWORD: ${{ secrets.TEST_APP_PASSWORD }}
-          AWS_AUDIT_PROFILE: default
           AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AUDIT_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AUDIT_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1   # must match ai.aws_region in clementine.yaml
         run: |
           clementine run --config clementine.yaml --format sarif --output results
 
@@ -513,6 +535,13 @@ Restart the tool — the new pattern is picked up automatically.
 | `orchestrator.finding_db` | `sqlite:///findings.db` | SQLite path or PostgreSQL DSN |
 | `orchestrator.pause_between_phases` | `false` | Wait for ENTER before each phase |
 | `orchestrator.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `ai.enabled` | `true` | Set `false` to skip triage and discovery entirely |
+| `ai.aws_region` | `us-east-1` | AWS region for Bedrock inference |
+| `ai.primary_model` | `us.anthropic.claude-sonnet-4-6-20251101` | Bedrock model ID for recon, app-test, and triage |
+| `ai.critical_model` | `us.anthropic.claude-opus-4-7-20251101` | Bedrock model ID reserved for chain discovery |
+| `ai.effort` | `high` | Opus extended-thinking depth (`low` / `medium` / `high` / `xhigh` / `max`) |
+| `ai.max_parallel_requests` | `4` | Concurrent Bedrock calls |
+| `ai.max_retries` | `3` | Retry budget for throttling / 5xx errors |
 | `ai.discovery.max_tokens` | `8192` | Max output tokens for AI discovery call |
 | `ai.discovery.effort` | `"medium"` | Opus thinking depth (`low` / `medium` / `high`) |
 | `ai.discovery.max_retries` | `1` | Retry budget for AI discovery |
@@ -544,7 +573,8 @@ Clementine degrades gracefully when non-critical servers are unavailable — the
 - **Scope enforcement** is applied at the orchestrator before every MCP tool call — no request is ever sent outside `include_domains`.
 - **Rate limiting** is enforced centrally, not delegated to individual tools.
 - **Evidence** stored in the database is scrubbed of `Authorization`, `Cookie`, `Bearer`, and password values before writing.
-- **AWS audit credentials** should have `SecurityAudit` + `ViewOnlyAccess` only — no write permissions.
+- **AWS audit credentials** should have `SecurityAudit` + `ViewOnlyAccess` + `bedrock:InvokeModel` only — no write permissions.
+- **AI authentication** uses the AWS credential chain (env vars, `~/.aws/credentials`, instance profile). No Anthropic API key is used or accepted.
 - Use **dedicated test accounts** for application credentials; rotate them after each assessment.
 
 ---

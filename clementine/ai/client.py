@@ -1,19 +1,19 @@
 """
-Thin async wrapper around the Anthropic SDK.
+Thin async wrapper around the Anthropic Bedrock SDK.
 
 Centralises four concerns so the rest of the AI subsystem does not have to
 care about them:
 
-1. **Graceful degradation** — if the API key is missing or the ``ai`` config
-   section is disabled, :meth:`ClaudeClient.from_config` returns ``None`` so
-   callers can skip AI work without raising.
+1. **Graceful degradation** — if the ``ai`` config section is disabled,
+   :meth:`ClaudeClient.from_config` returns ``None`` so callers can skip AI
+   work without raising.
 2. **Parallelism control** — a semaphore caps concurrent requests at
    ``max_parallel_requests`` so a single large assessment can't exhaust the
-   tenant's Anthropic rate budget.
-3. **Retry logic** — transient errors (rate limit, network, 5xx) are retried
+   Bedrock account's throughput quota.
+3. **Retry logic** — transient errors (throttling, network, 5xx) are retried
    with exponential backoff; permanent errors (bad request, auth) bubble up
-   immediately so they aren't silently masked. Per-call retry override lets
-   the discovery path opt out of multi-retry token amplification.
+   immediately. Per-call retry override lets the discovery path opt out of
+   multi-retry token amplification.
 4. **Token telemetry** — every parsed response's ``usage`` is captured and
    persisted to the ``ai_usage`` table so per-run cost is queryable without
    external tooling.
@@ -78,20 +78,31 @@ class ClaudeUnavailable(RuntimeError):
     """Raised when AI features are requested but the client is not configured."""
 
 
-class ClaudeClient:
-    """Async wrapper around :class:`anthropic.AsyncAnthropic`.
+# Maps effort level names to Bedrock extended-thinking budget_tokens values.
+_EFFORT_BUDGET: dict[str, int] = {
+    "low": 1024,
+    "medium": 4096,
+    "high": 10000,
+    "xhigh": 16000,
+    "max": 32000,
+}
 
-    Use :meth:`from_config` to construct; it returns ``None`` when AI is
-    disabled, which is the signal that callers should skip AI work.
+
+class ClaudeClient:
+    """Async wrapper around :class:`anthropic.AsyncAnthropicBedrock`.
+
+    Authentication is handled by boto3's standard credential chain — no API key
+    is required. Use :meth:`from_config` to construct; it returns ``None`` when
+    AI is disabled, which is the signal that callers should skip AI work.
     """
 
     def __init__(self, cfg: AIConfig, db: Optional["FindingsDB"] = None) -> None:
         # Lazy import so the orchestrator doesn't require the SDK unless AI
         # is actually enabled in the config.
-        from anthropic import AsyncAnthropic
+        from anthropic import AsyncAnthropicBedrock
 
         self._cfg = cfg
-        self._client = AsyncAnthropic(api_key=cfg.api_key)
+        self._client = AsyncAnthropicBedrock(aws_region=cfg.aws_region)
         self._semaphore = asyncio.Semaphore(cfg.max_parallel_requests)
         self._db = db
         self.usage = TokenUsage()
@@ -106,21 +117,17 @@ class ClaudeClient:
     ) -> Optional["ClaudeClient"]:
         """Build a client or return None if AI should be skipped.
 
-        AI is skipped when:
-          * ``ai.enabled`` is False, or
-          * ``ai.api_key`` is missing / empty (e.g. ``ANTHROPIC_API_KEY`` unset).
+        AI is skipped when ``ai.enabled`` is False. AWS credentials are
+        resolved at first call via boto3's standard chain (env vars,
+        ~/.aws/credentials, instance profile, ECS task role); a missing or
+        invalid credential will raise on the first Bedrock request rather than
+        here so the config-load path stays fast.
 
         Pass ``db`` to enable per-call token-usage persistence to the
         ``ai_usage`` table.
         """
         if not cfg.enabled:
             log.info("AI subsystem disabled via config — skipping triage and discovery")
-            return None
-        if not cfg.api_key:
-            log.warning(
-                "AI subsystem enabled but no API key resolved — skipping triage and "
-                "discovery. Set ANTHROPIC_API_KEY to enable."
-            )
             return None
         return cls(cfg, db=db)
 
@@ -165,10 +172,14 @@ class ClaudeClient:
             "messages": [{"role": "user", "content": user_content}],
             "output_format": response_model,
         }
-        # Adaptive thinking + effort are Opus 4.x features; Sonnet rejects them.
+        # Extended thinking is an Opus 4.x feature on Bedrock; Sonnet ignores it.
+        # budget_tokens must be strictly less than max_tokens, so clamp upward
+        # if the caller-supplied max_tokens is too tight for the chosen effort.
         if "opus" in chosen_model.lower():
-            params["thinking"] = {"type": "adaptive"}
-            params["output_config"] = {"effort": chosen_effort}
+            budget = _EFFORT_BUDGET.get(chosen_effort, 10000)
+            if params["max_tokens"] <= budget:
+                params["max_tokens"] = budget + 1024
+            params["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         async with self._semaphore:
             result = await self._with_retries(
@@ -242,6 +253,8 @@ class ClaudeClient:
         Pass ``max_retries`` to override the per-client default — discovery
         sets this to 1 so a 16K-token call doesn't silently triple the bill.
         """
+        # The anthropic SDK wraps Bedrock-level errors in the same exception
+        # hierarchy as the direct API, so these imports work for both transports.
         from anthropic import (
             APIConnectionError,
             APITimeoutError,
@@ -259,13 +272,13 @@ class ClaudeClient:
                 attempt += 1
                 if attempt > budget:
                     log.error(
-                        "Anthropic request failed after %d retries: %s", attempt - 1, exc
+                        "Bedrock request failed after %d retries: %s", attempt - 1, exc
                     )
                     raise
                 # Exponential backoff with jitter: 1s, 2s, 4s, … capped at 30s
                 delay = min(30.0, (2 ** (attempt - 1)) + random.random())
                 log.warning(
-                    "Anthropic transient error (attempt %d/%d): %s — retrying in %.1fs",
+                    "Bedrock transient error (attempt %d/%d): %s — retrying in %.1fs",
                     attempt, budget, exc, delay,
                 )
                 await asyncio.sleep(delay)

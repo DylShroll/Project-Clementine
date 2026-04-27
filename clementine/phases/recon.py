@@ -59,7 +59,7 @@ async def run_recon(
             prompt,
             timeout=3600,
             model=cfg.ai.primary_model,
-            api_key=cfg.ai.api_key or None,
+            aws_region=cfg.ai.aws_region,
         )
         log.debug("[Phase 1] Claude Code output (last 400 chars): …%s", output[-400:])
 

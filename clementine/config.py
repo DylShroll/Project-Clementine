@@ -262,24 +262,26 @@ class AIDiscoveryConfig(BaseModel):
 
 
 class AIConfig(BaseModel):
-    """Anthropic Claude integration for triage and novel-chain discovery.
+    """Amazon Bedrock Claude integration for triage and novel-chain discovery.
 
-    Resolved from environment variables at load time; if the API key is
-    missing the orchestrator logs a warning and skips the AI phases rather
-    than failing the entire assessment.
+    Authentication is handled entirely via the standard AWS credential chain
+    (env vars, ~/.aws/credentials, instance profile, ECS task role). No
+    Anthropic API key is required — access is governed by IAM policies that
+    grant bedrock:InvokeModel on the target model ARNs.
     """
     enabled: bool = True
-    # Resolved from ${ANTHROPIC_API_KEY} in the YAML; empty means "disabled".
-    api_key: Optional[str] = None
-    # Primary model — drives the heavy phases (recon, app-test, triage).
-    # Sonnet by default; it handles 95% of WSTG execution well at a fraction
-    # of Opus cost. Tune via YAML only if a tenant has a strong reason.
-    primary_model: str = "claude-sonnet-4-6"
-    # Critical model — reserved for the hardest reasoning step (novel
-    # attack-chain discovery). Opus earns its cost here because the chain
-    # synthesis is where subtle cross-domain correlations are found.
-    critical_model: str = "claude-opus-4-7"
-    # Effort controls thinking depth on Opus 4.x. Sonnet ignores it.
+    # AWS region where Bedrock inference is available for the target models.
+    # Must match a region where cross-region inference profiles are enabled.
+    aws_region: str = "us-east-1"
+    # Primary model — cross-region inference profile ID for the heavy phases
+    # (recon, app-test, triage). Verify availability in your account/region
+    # via the Bedrock console before deploying.
+    primary_model: str = "us.anthropic.claude-sonnet-4-6-20251101"
+    # Critical model — reserved for novel attack-chain discovery. Opus earns
+    # its cost here; verify the cross-region inference profile is enabled.
+    critical_model: str = "us.anthropic.claude-opus-4-7-20251101"
+    # Effort controls extended-thinking budget on Opus 4.x (Sonnet ignores it).
+    # Maps to budget_tokens: low=1024 medium=4096 high=10000 xhigh=16000 max=32000
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
     # How many parallel Anthropic requests may be in flight at once. Kept
     # conservative so a large assessment doesn't exhaust rate limits.
