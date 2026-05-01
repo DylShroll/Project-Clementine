@@ -1,0 +1,9 @@
+Resources
+| where type =~ "microsoft.storage/storageaccounts"
+| project id, name, resourceGroup, subscriptionId, location,
+          allowBlobPublicAccess = tobool(properties.allowBlobPublicAccess),
+          allowSharedKeyAccess  = tobool(properties.allowSharedKeyAccess),
+          minimumTlsVersion     = tostring(properties.minimumTlsVersion),
+          publicNetworkAccess   = tostring(properties.publicNetworkAccess),
+          defaultAction         = tostring(properties.networkAcls.defaultAction),
+          httpsOnly             = tobool(properties.supportsHttpsTrafficOnly)

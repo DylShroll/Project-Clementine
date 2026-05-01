@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
+from .azure_model import AzureEdgeType
 from .model import AWSEdgeType, AWSNodeType, GraphNode, IMDS_NODE_ID
 
 if TYPE_CHECKING:
@@ -176,15 +177,17 @@ class GraphBuilder:
             return
 
         self._nodes[node.node_id] = node
+        # node.node_type is now a plain str (either an AWSNodeType value or an
+        # AzureNodeType value — both are str enums, so no .value call needed).
         self._graph.add_node(
             node.node_id,
-            node_type=node.node_type.value,
+            node_type=node.node_type,
             label=node.label,
             properties=node.properties,
             is_internet_facing=node.is_internet_facing,
         )
 
-    def _add_edge(self, src: str, dst: str, edge_type: AWSEdgeType) -> None:
+    def _add_edge(self, src: str, dst: str, edge_type: "AWSEdgeType | AzureEdgeType | str") -> None:
         """Add a directed edge, auto-creating stub nodes for unknown endpoints."""
         for nid in (src, dst):
             if not self._graph.has_node(nid):
@@ -193,7 +196,9 @@ class GraphBuilder:
                     properties={}, is_internet_facing=False,
                 )
         if not self._graph.has_edge(src, dst):
-            self._graph.add_edge(src, dst, type=edge_type.value)
+            # Both AWSEdgeType and AzureEdgeType are str-enums so str() always
+            # yields the plain string value without an extra .value call.
+            self._graph.add_edge(src, dst, type=str(edge_type))
 
     def get_nodes(self) -> list[GraphNode]:
         """Return all tracked GraphNode objects."""
@@ -233,11 +238,14 @@ class GraphBuilder:
         rich_edges = await self._db.get_graph_edges()
         for e in rich_edges:
             edge_type_str = e["edge_type"]
+            # Resolve AWS edge type first, then Azure, then pass raw string.
             try:
-                edge_type = AWSEdgeType(edge_type_str)
+                edge_type: AWSEdgeType | AzureEdgeType | str = AWSEdgeType(edge_type_str)
             except ValueError:
-                # Unknown edge_type — skip rather than guess.
-                continue
+                try:
+                    edge_type = AzureEdgeType(edge_type_str)
+                except ValueError:
+                    edge_type = edge_type_str  # unknown but preserve for cross-cloud patterns
             self._add_edge(e["source_id"], e["target_id"], edge_type)
             # Stamp the rich properties onto the in-memory edge so query
             # helpers (paths_between with edge_types filter, etc.) can read
@@ -284,6 +292,11 @@ class GraphBuilder:
             await self._enrich_from_cloud_audit(mcp, limiter)
         else:
             log.debug("[Graph] cloud_audit unavailable — skipping MCP enrichment")
+
+        # Azure enrichment — runs only when Azure nodes exist in the DB.
+        # Importing here avoids a circular import at module load time.
+        from .azure_enrichment import enrich_azure
+        await enrich_azure(self, db=self._db, mcp=mcp, limiter=limiter)
 
         log.info(
             "[Graph] Built: %d nodes, %d edges",

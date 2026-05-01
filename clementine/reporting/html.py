@@ -100,10 +100,17 @@ _OWASP_KEYWORDS = [
     ("cloud-audit", "AWS", "Cloud Posture"),
     ("imds", "AWS", "Cloud Posture"),
     ("prowler", "AWS", "Cloud Posture"),
+    # Azure keywords
+    ("azure:", "AZURE", "Azure Posture"),
+    ("az_", "AZURE", "Azure Posture"),
+    ("keyvault", "AZURE", "Azure Posture"),
+    ("entra", "AZURE", "Azure Posture"),
+    ("defender", "AZURE", "Azure Posture"),
+    ("clementine-azure-probe", "AZURE", "Azure Posture"),
 ]
 _OWASP_ORDER = [
     "A01", "A02", "A03", "A04", "A05", "A06",
-    "A07", "A08", "A09", "A10", "AWS", "OTHER",
+    "A07", "A08", "A09", "A10", "AWS", "AZURE", "OTHER",
 ]
 
 
@@ -419,6 +426,31 @@ section.s.tight { padding-bottom: 56px; }
 .b-low .d   { background: var(--sev-low); }
 .b-info     { color: var(--sev-info);     background: var(--sev-info-dim);     border-color: var(--sev-info-line); }
 .b-info .d  { background: var(--sev-info); }
+/* Provider badges */
+.badge.provider-aws   { color: #ff9500; background: rgba(255,149,0,.12); border-color: rgba(255,149,0,.35); }
+.badge.provider-azure { color: #60a5fa; background: rgba(96,165,250,.12); border-color: rgba(96,165,250,.35); }
+.badge.provider-multi { color: #a78bfa; background: rgba(167,139,250,.12); border-color: rgba(167,139,250,.35); }
+/* Multi-cloud chain highlight */
+.chain-multi { border-left: 3px solid #fbbf24; }
+/* Provider lane toggle */
+.lane-btn { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 3px; font-size: 11px; font-family: var(--f-mono); cursor: pointer; border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink-3); user-select: none; transition: all .15s; }
+.lane-btn.on { border-color: var(--ink-4); color: var(--ink); background: var(--bg-3); }
+.lane-btn.aws-btn.on  { border-color: #ff9500; color: #ff9500; }
+.lane-btn.az-btn.on   { border-color: #60a5fa; color: #60a5fa; }
+.lane-btn.multi-btn.on { border-color: #fbbf24; color: #fbbf24; }
+/* Posture side-by-side cards */
+.posture-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+.posture-card { background: var(--bg-1); border: 1px solid var(--line-2); border-radius: 6px; padding: 16px; }
+.posture-card h4 { margin: 0 0 12px; font-size: 13px; font-weight: 600; letter-spacing: .04em; }
+.posture-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; border-bottom: 1px solid var(--line-1); }
+/* Identity hygiene table */
+.hygiene-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.hygiene-table th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line-2); color: var(--ink-3); font-weight: 500; }
+.hygiene-table td { padding: 5px 8px; border-bottom: 1px solid var(--line-1); }
+/* Drift table */
+.drift-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.drift-table th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line-2); color: var(--ink-3); font-weight: 500; }
+.drift-table td { padding: 5px 8px; border-bottom: 1px solid var(--line-1); }
 
 .tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 7px; border-radius: 3px; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.06em; color: var(--ink-3); background: var(--bg-2); border: 1px solid var(--line-2); }
 .tag.ai           { color: var(--accent); border-color: var(--accent-line); background: var(--accent-dim); }
@@ -626,6 +658,15 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
   <a class="rail-link" href="#playbook">Remediation</a>
   {% if compliance_controls %}
   <a class="rail-link" href="#compliance">Compliance</a>
+  {% if az_counts.values() | sum > 0 %}
+  <a class="rail-link" href="#posture">Cloud Posture</a>
+  {% endif %}
+  {% if identity_hygiene %}
+  <a class="rail-link" href="#identity">Identity</a>
+  {% endif %}
+  {% if defender_prowler_drift %}
+  <a class="rail-link" href="#drift">Drift</a>
+  {% endif %}
   {% endif %}
   {% if graph_json != '{}' %}
   <a class="rail-link" href="#graph">Attack Graph</a>
@@ -728,14 +769,31 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
     <h2 class="s-title">Compound attack paths through the stack.</h2>
     <span class="s-sub">{{ chain_data|length }} chain{{ 's' if chain_data|length != 1 }} &middot; all reachable</span>
   </div>
+  {% if multi_cloud_chains %}
+  <div style="margin-bottom:20px">
+    <div style="font-size:12px;font-family:var(--f-mono);color:#fbbf24;letter-spacing:.06em;margin-bottom:8px;">&#9889; MULTI-CLOUD KILL CHAINS ({{ multi_cloud_chains|length }})</div>
+    {% for cd in multi_cloud_chains %}
+    {% set chain = cd.chain %}
+    {% set sevlo = chain.severity.value.lower() %}
+    <div style="border:1px solid rgba(251,191,36,.35);border-left:3px solid #fbbf24;border-radius:4px;padding:10px 14px;margin-bottom:8px;background:rgba(251,191,36,.04);">
+      <span class="badge b-{{ sevlo }}" style="margin-right:8px"><span class="d"></span>{{ chain.severity.value }}</span>
+      <span class="badge provider-multi" style="margin-right:8px;font-size:9px;">MULTI-CLOUD</span>
+      <strong>{{ chain.pattern_name }}</strong>
+      <div style="font-size:11px;color:var(--ink-3);margin-top:4px;">{{ chain.narrative[:200] if chain.narrative else '' }}{% if chain.narrative and chain.narrative|length > 200 %}…{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
   <div class="chains">
     {% for cd in chain_data %}
     {% set chain = cd.chain %}
     {% set cidx = loop.index %}
     {% set sevlo = chain.severity.value.lower() %}
-    <div class="chain {% if loop.first %}open{% endif %}" id="chain-{{ cidx }}">
+    {% set is_multi = cd in multi_cloud_chains %}
+    <div class="chain {% if loop.first %}open{% endif %}{% if is_multi %} chain-multi{% endif %}" id="chain-{{ cidx }}">
       <div class="chain-row" onclick="toggleChain({{ cidx }})">
         <span class="badge b-{{ sevlo }}"><span class="d"></span>{{ chain.severity.value }}</span>
+        {% if is_multi %}<span class="badge provider-multi" style="font-size:9px;">MULTI</span>{% endif %}
         <span class="chain-id">C-{{ "%02d"|format(cidx) }}</span>
         <span class="chain-name">{{ chain.pattern_name }}</span>
         <span class="chain-meta">
@@ -866,6 +924,8 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
              data-search="{{ (f.title ~ ' ' ~ (f.category or '') ~ ' ' ~ f.source ~ ' ' ~ f.id) | lower }}"
              onclick="toggleFinding('{{ f.id }}')">
           <span class="find-sev {{ sevdisp }}"><span class="d"></span>{{ f.severity.value }}</span>
+          {% set prov = f.provider if f.provider else 'aws' %}
+          <span class="badge provider-{{ prov }}" style="font-size:9px;padding:2px 6px;">{{ prov | upper }}</span>
           <span class="find-title">{{ f.title }}</span>
           <span class="find-src">{{ f.source }} &middot; {{ (f.category or '') | truncate(22, True, '…') }}</span>
           <span class="find-id">{{ f.id }}</span>
@@ -998,6 +1058,80 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
 </section>
 {% endif %}
 
+<!-- ── Per-Cloud Posture ── -->
+{% if az_counts.values() | sum > 0 %}
+<section class="s" id="posture">
+  <div class="s-head">
+    <span class="s-eyebrow">06 — Cloud Posture</span>
+    <h2 class="s-title">Severity distribution by provider.</h2>
+  </div>
+  <div class="posture-grid">
+    <div class="posture-card">
+      <h4>&#x2601; AWS</h4>
+      {% for sev in ['CRITICAL','HIGH','MEDIUM','LOW','INFO'] %}
+      <div class="posture-row">
+        <span>{{ sev }}</span>
+        <span>{{ aws_counts[sev] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="posture-card">
+      <h4 style="color:#60a5fa">&#x2601; Azure</h4>
+      {% for sev in ['CRITICAL','HIGH','MEDIUM','LOW','INFO'] %}
+      <div class="posture-row">
+        <span>{{ sev }}</span>
+        <span>{{ az_counts[sev] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<!-- ── Identity Hygiene ── -->
+{% if identity_hygiene %}
+<section class="s" id="identity">
+  <div class="s-head">
+    <span class="s-eyebrow">07 — Identity Hygiene</span>
+    <h2 class="s-title">Federated credentials and PIM-eligible role assignments.</h2>
+    <span class="s-sub">{{ identity_hygiene|length }} item{{ 's' if identity_hygiene|length != 1 }}</span>
+  </div>
+  <table class="hygiene-table">
+    <tr><th>Type</th><th>Name</th><th>Detail</th><th>Risk</th></tr>
+    {% for item in identity_hygiene %}
+    <tr>
+      <td>{{ item.type | replace('_', ' ') | title }}</td>
+      <td>{{ item.name }}</td>
+      <td style="font-family:var(--f-mono);font-size:11px;color:var(--ink-3)">{{ item.detail }}</td>
+      <td><span class="badge b-{{ item.risk.lower() }}">{{ item.risk }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+<!-- ── Defender vs Prowler Drift ── -->
+{% if defender_prowler_drift %}
+<section class="s" id="drift">
+  <div class="s-head">
+    <span class="s-eyebrow">08 — Compliance Drift</span>
+    <h2 class="s-title">Defender for Cloud vs Prowler control verdict disagreements.</h2>
+    <span class="s-sub">{{ defender_prowler_drift|length }} drifting control{{ 's' if defender_prowler_drift|length != 1 }}</span>
+  </div>
+  <table class="drift-table">
+    <tr><th>Framework</th><th>Control</th><th>Prowler</th><th>Defender</th></tr>
+    {% for row in defender_prowler_drift %}
+    <tr>
+      <td style="font-family:var(--f-mono);font-size:11px">{{ row.framework }}</td>
+      <td style="font-family:var(--f-mono);font-size:11px">{{ row.control_id }}</td>
+      <td style="color:{% if 'pass' in row.prowler_state.lower() %}#22c55e{% else %}#ef4444{% endif %}">{{ row.prowler_state }}</td>
+      <td style="color:{% if 'pass' in row.defender_state.lower() %}#22c55e{% else %}#ef4444{% endif %}">{{ row.defender_state }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
 <!-- ── Attack Graph ── -->
 {% if graph_json != '{}' %}
 <section class="s tight" id="graph">
@@ -1014,6 +1148,10 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
         <button class="cy-btn" onclick="_gZoomBy(1.25)">+</button>
         <button class="cy-btn" onclick="_gZoomBy(0.8)">&minus;</button>
         <button class="cy-btn" onclick="_gZoomFit()" style="font-size:.68rem">Fit</button>
+        <span style="width:1px;background:var(--line-2);margin:0 4px;align-self:stretch"></span>
+        <button class="lane-btn aws-btn on" id="lane-aws" onclick="_toggleLane('aws')" title="Toggle AWS nodes">&#x2601; AWS</button>
+        <button class="lane-btn az-btn on"  id="lane-azure" onclick="_toggleLane('azure')" title="Toggle Azure nodes">&#x2601; Azure</button>
+        <button class="lane-btn multi-btn on" id="lane-multi" onclick="_toggleLane('multi')" title="Toggle multi-cloud nodes">&#9889; Multi</button>
       </div>
       <div id="cy-panel">
         <div class="cy-panel-head">
@@ -1210,6 +1348,7 @@ _railSections.forEach(function(id) {
     var nbrs=_gHovNode?_gNbrSet(_gHovNode.id):null;
     _gedges.forEach(function(e){
       var s=_gmap[e.source],t=_gmap[e.target];if(!s||!t)return;
+      if(s._hidden||t._hidden)return;
       var hi=_gHovNode&&(e.source===_gHovNode.id||e.target===_gHovNode.id);
       _ctx.globalAlpha=hi?.92:(_gHovNode?.12:.42);
       _ctx.beginPath();_ctx.setLineDash(e.dashed?[5,3]:[]);
@@ -1224,6 +1363,7 @@ _railSections.forEach(function(id) {
     });
     _ctx.setLineDash([]);_ctx.globalAlpha=1;
     _gnodes.forEach(function(n){
+      if(n._hidden)return;
       var r=n.radius||10,isHov=_gHovNode&&_gHovNode.id===n.id,isSel=_gSelNode&&_gSelNode.id===n.id;
       var dim=nbrs&&!nbrs[n.id];_ctx.globalAlpha=dim?.18:1;
       if(isSel){_ctx.beginPath();_ctx.arc(n.x,n.y,r+6,0,Math.PI*2);_ctx.strokeStyle='#e8eaed';_ctx.lineWidth=2/_gzoom;_ctx.stroke();}
@@ -1231,6 +1371,20 @@ _railSections.forEach(function(id) {
       if(n.border_color&&n.border_color!=='#94a3b8'){_ctx.strokeStyle=n.border_color;_ctx.lineWidth=(isHov?3:2)/_gzoom;_ctx.stroke();}
     });_ctx.globalAlpha=1;_ctx.restore();
   }
+  // Provider lane toggle — hide/show nodes by provider attribute
+  var _gLaneState={aws:true,azure:true,multi:true};
+  window._toggleLane=function(lane){
+    _gLaneState[lane]=!_gLaneState[lane];
+    var btn=document.getElementById('lane-'+lane);
+    if(btn) btn.classList.toggle('on',_gLaneState[lane]);
+    // Rebuild visible node set
+    _gnodes.forEach(function(n){
+      var p=n.provider||'aws';
+      var isMulti=(p==='multi');
+      var show=isMulti?_gLaneState.multi:(_gLaneState[p]);
+      n._hidden=!show;
+    });
+  };
   window._gZoomFit=function(){
     if(!_gnodes.length)return;var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
     _gnodes.forEach(function(n){var r=(n.radius||10)+4;if(n.x-r<x0)x0=n.x-r;if(n.x+r>x1)x1=n.x+r;if(n.y-r<y0)y0=n.y-r;if(n.y+r>y1)y1=n.y+r;});
@@ -1493,6 +1647,86 @@ class HtmlReporter:
         for group in playbook.values():
             group.sort(key=lambda x: (not x["breaks_chain"],))
 
+        # ------------------------------------------------------------------
+        # Azure-specific report data
+        # ------------------------------------------------------------------
+
+        # Per-cloud severity counts for the posture cards
+        aws_counts: dict[str, int] = {s.value: 0 for s in Severity}
+        az_counts: dict[str, int]  = {s.value: 0 for s in Severity}
+        for f in findings:
+            provider = getattr(f, "provider", "aws") or "aws"
+            if provider == "azure":
+                az_counts[f.severity.value] += 1
+            else:
+                aws_counts[f.severity.value] += 1
+
+        # Multi-cloud chains — chains whose components span both providers
+        finding_by_id = {f.id: f for f in findings}
+        multi_cloud_chains: list[dict] = []
+        for cd in chain_data:
+            providers_seen: set[str] = set()
+            for comp in cd["components"]:
+                fid = comp.finding_id if hasattr(comp, "finding_id") else comp.get("finding_id")
+                if fid and fid in finding_by_id:
+                    prov = getattr(finding_by_id[fid], "provider", "aws") or "aws"
+                    providers_seen.add(prov)
+            if len(providers_seen) > 1:
+                multi_cloud_chains.append(cd)
+
+        # Identity hygiene: federated credentials and PIM-eligible role assignments
+        identity_hygiene: list[dict] = []
+        try:
+            fed_creds = await self._db.get_azure_federated_credentials()
+            for cred in fed_creds:
+                identity_hygiene.append({
+                    "type":    "federated_credential",
+                    "name":    cred.get("name") or cred.get("id", "")[:60],
+                    "detail":  f"issuer={cred.get('issuer','?')} subject={cred.get('subject','?')}",
+                    "risk":    "HIGH" if cred.get("subject") == "*" else "INFO",
+                })
+        except Exception:
+            pass
+        try:
+            role_assignments = await self._db.get_azure_role_assignments()
+            for ra in role_assignments:
+                if ra.get("pim_eligible"):
+                    identity_hygiene.append({
+                        "type":   "pim_eligible",
+                        "name":   ra.get("role_definition_name", ra.get("role_definition_id", "?"))[:60],
+                        "detail": f"principal={ra.get('principal_id','?')} scope={ra.get('scope','?')}",
+                        "risk":   "MEDIUM",
+                    })
+        except Exception:
+            pass
+
+        # Defender vs Prowler drift
+        defender_prowler_drift: list[dict] = []
+        try:
+            compliance_findings = await self._db.get_azure_compliance_findings()
+            prowler_map: dict[tuple, str] = {}
+            defender_map: dict[tuple, str] = {}
+            for cf in compliance_findings:
+                key = (cf.get("framework", ""), cf.get("control_id", ""))
+                source = cf.get("source", "")
+                state = cf.get("state", "")
+                if "prowler" in source.lower():
+                    prowler_map[key] = state
+                elif "defender" in source.lower():
+                    defender_map[key] = state
+            for key in set(prowler_map) & set(defender_map):
+                ps, ds = prowler_map[key], defender_map[key]
+                # Drift: one says passed, the other says failed
+                if (ps.lower() in ("passed", "pass")) != (ds.lower() in ("passed", "pass")):
+                    defender_prowler_drift.append({
+                        "framework":       key[0],
+                        "control_id":      key[1],
+                        "prowler_state":   ps,
+                        "defender_state":  ds,
+                    })
+        except Exception:
+            pass
+
         # Attack graph
         graph_json = "{}"
         try:
@@ -1547,6 +1781,12 @@ class HtmlReporter:
             health_score=health_score,
             graph_json=graph_json,
             graph_path=graph_path,
+            # Azure additions
+            aws_counts=aws_counts,
+            az_counts=az_counts,
+            multi_cloud_chains=multi_cloud_chains,
+            identity_hygiene=identity_hygiene,
+            defender_prowler_drift=defender_prowler_drift,
         )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

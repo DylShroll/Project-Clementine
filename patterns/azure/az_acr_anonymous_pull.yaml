@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Container Registry Anonymous Pull Enabled"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:acr_anonymous_pull_enabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:acr_image_contains_secret"
+    relationship: same_resource_group
+
+impact: >
+  An Azure Container Registry allows unauthenticated image pulls. Any internet client
+  can pull images without credentials. If images contain secrets, connection strings,
+  private keys, or internal API endpoints in layers or environment variables, these
+  are disclosed to any internet attacker.
+
+remediation_priority:
+  - summary: "Set anonymousPullEnabled=false on all ACR instances"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Scan all image layers for secrets with a registry-integrated scanner (Defender for Containers)"
+    effort: MEDIUM
+    breaks_chain: false

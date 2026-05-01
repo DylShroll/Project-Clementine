@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Firewall Threat Intelligence Filtering Disabled or in Alert Mode"
+  severity: LOW
+
+entry:
+  type: azure_finding
+  check: "azure:firewall_threat_intel_not_blocking"
+
+pivot:
+  - type: azure_finding
+    check: "azure:internet_routable_subnet_no_forced_tunnel"
+    relationship: same_subscription
+
+impact: >
+  Azure Firewall has threat intelligence filtering disabled or set to Alert-only mode.
+  Known malicious IP addresses and domains (Microsoft threat intelligence feed) pass
+  through without blocking. Malware C2 communications, data exfiltration to known-bad
+  IPs, and lateral movement to internet-hosted attacker infrastructure are not blocked.
+
+remediation_priority:
+  - summary: "Set Azure Firewall threat intelligence mode to Deny for all policy rule collections"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Enable Azure Firewall logs forwarding to Log Analytics and alert on threat intel hits"
+    effort: LOW
+    breaks_chain: false

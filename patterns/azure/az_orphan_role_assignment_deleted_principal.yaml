@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Orphaned Role Assignment to Deleted Principal"
+  severity: LOW
+
+entry:
+  type: azure_finding
+  check: "azure:role_assignment_deleted_principal"
+
+pivot:
+  - type: azure_finding
+    check: "azure:subscription_guest_invite_unrestricted"
+    relationship: same_tenant
+
+impact: >
+  Role assignments referencing deleted principals (shown as Unknown in the portal) are
+  not automatically cleaned up. In tenants that allow unrestricted guest invitations,
+  an attacker who can predict or enumerate the deleted principal's object ID could
+  potentially re-create an identity with the same object ID via guest invite and
+  inherit the existing role assignment without explicit granting.
+
+remediation_priority:
+  - summary: "Run regular cleanup: remove all role assignments with ObjectType=Unknown"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Restrict guest user invitations to admins only (externalCollaborationSettings)"
+    effort: LOW
+    breaks_chain: false

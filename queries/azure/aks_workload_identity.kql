@@ -1,0 +1,10 @@
+Resources
+| where type =~ "microsoft.containerservice/managedclusters"
+| project id, name, resourceGroup, subscriptionId,
+          oidcIssuerEnabled = tobool(properties.oidcIssuerProfile.enabled),
+          oidcIssuerUrl     = tostring(properties.oidcIssuerProfile.issuerUrl),
+          workloadIdentity  = tobool(properties.securityProfile.workloadIdentity.enabled),
+          aadProfile        = properties.aadProfile,
+          apiServerAccess   = properties.apiServerAccessProfile,
+          networkPlugin     = tostring(properties.networkProfile.networkPlugin),
+          privateCluster    = tobool(properties.apiServerAccessProfile.enablePrivateCluster)

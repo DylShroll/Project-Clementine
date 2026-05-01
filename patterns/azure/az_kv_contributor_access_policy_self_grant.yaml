@@ -1,0 +1,33 @@
+pattern:
+  name: "Azure Key Vault Contributor on Access-Policy Vault → Self-Grant Secret Access"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:kv_access_policy_model"
+
+pivot:
+  - type: azure_finding
+    check: "azure:contributor_on_kv_resource_group"
+    relationship:
+      via_edges:
+        - HAS_RBAC_ROLE
+      max_hops: 3
+
+impact: >
+  Key Vaults that use the legacy access-policy permission model (rbacEnabled=false) can be
+  fully compromised by any principal with Contributor on the vault or its resource group.
+  Contributor allows modifying the vault's access policies — including adding a new policy
+  that grants the attacker Get/List/Set permissions on all secrets, keys, and certificates.
+  This is a one-step privilege escalation with no approval required.
+
+remediation_priority:
+  - summary: "Migrate all Key Vaults to Azure RBAC authorization model (enableRbacAuthorization=true)"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Audit Contributor-level assignments on Key Vault resource groups; replace with Reader where possible"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Defender for Key Vault anomaly alerts"
+    effort: LOW
+    breaks_chain: false

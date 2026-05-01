@@ -282,3 +282,79 @@ class ClaudeClient:
                     attempt, budget, exc, delay,
                 )
                 await asyncio.sleep(delay)
+
+
+# ---------------------------------------------------------------------------
+# Azure resource ID aliasing (token budget reducer for Bedrock prompts)
+# ---------------------------------------------------------------------------
+
+def build_azure_alias_map(resource_ids: list[str]) -> dict[str, str]:
+    """Compress Azure resource IDs to short readable aliases.
+
+    Azure resource IDs are long (/subscriptions/…/resourceGroups/…/providers/…)
+    and consume significant tokens when serialised into prompts. This function
+    maps each unique resource ID to a 6–10 char alias like ``kv:dxz`` or
+    ``vm:ab7``, using the resource type as the prefix and a 3-char hash suffix
+    for uniqueness.
+
+    Returns a dict mapping original resource ID → alias. Call
+    ``apply_azure_aliases(text, alias_map)`` to perform substitution.
+    """
+    import hashlib
+
+    # Extract the resource type leaf (last provider segment, e.g. "vaults" → "kv")
+    _TYPE_SHORT: dict[str, str] = {
+        "vaults":               "kv",
+        "virtualMachines":      "vm",
+        "storageAccounts":      "sa",
+        "managedClusters":      "aks",
+        "sites":                "app",
+        "functionApps":         "fn",
+        "roleAssignments":      "ra",
+        "roleDefinitions":      "rd",
+        "userAssignedIdentities": "uami",
+        "sqlServers":           "sql",
+        "databaseAccounts":     "cos",
+        "namespaces":           "sb",
+        "networkSecurityGroups": "nsg",
+        "virtualNetworks":      "vnet",
+        "containerGroups":      "aci",
+        "registries":           "acr",
+        "subscriptions":        "sub",
+        "resourceGroups":       "rg",
+    }
+
+    alias_map: dict[str, str] = {}
+    seen_aliases: set[str] = set()
+
+    for rid in resource_ids:
+        if not rid or rid in alias_map:
+            continue
+        # Find the last "providers/…/<type>/<name>" segment
+        parts = rid.split("/")
+        type_hint = "res"
+        for i, part in enumerate(parts):
+            if part.lower() == "providers" and i + 2 < len(parts):
+                leaf = parts[i + 2]
+                type_hint = _TYPE_SHORT.get(leaf, leaf[:4].lower())
+                break
+
+        # 3-char hash suffix for uniqueness within this type prefix
+        suffix = hashlib.sha1(rid.encode()).hexdigest()[:3]
+        alias = f"{type_hint}:{suffix}"
+        # Resolve collisions (rare) by appending an extra char
+        while alias in seen_aliases:
+            suffix = hashlib.sha1((rid + alias).encode()).hexdigest()[:4]
+            alias = f"{type_hint}:{suffix}"
+
+        alias_map[rid] = alias
+        seen_aliases.add(alias)
+
+    return alias_map
+
+
+def apply_azure_aliases(text: str, alias_map: dict[str, str]) -> str:
+    """Replace all Azure resource IDs in *text* with their short aliases."""
+    for rid, alias in alias_map.items():
+        text = text.replace(rid, alias)
+    return text

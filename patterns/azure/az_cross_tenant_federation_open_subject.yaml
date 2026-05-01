@@ -1,0 +1,36 @@
+pattern:
+  name: "Azure Federated Identity Credential with Wildcard Subject → Cross-Tenant Token Forgery"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:federated_credential_wildcard_subject"
+
+pivot:
+  - type: azure_finding
+    check: "azure:uami_or_app_reg_with_privileged_rbac"
+    relationship:
+      via_edges:
+        - OIDC_TRUSTS
+        - HAS_RBAC_ROLE
+      max_hops: 3
+
+impact: >
+  A federated identity credential is configured with subject="*" (wildcard). The OIDC
+  specification requires the token exchange to verify the `sub` claim, but a wildcard
+  bypasses this: any JWT issued by the trusted OIDC provider with any subject claim is
+  accepted. If the trusted issuer is a GitHub Actions environment, any GitHub repository
+  in the trusted organization — or any public fork whose actions are triggered by pull
+  request — can impersonate this identity and obtain Azure tokens for the attached UAMI
+  or App Registration, regardless of intended repository or branch restrictions.
+
+remediation_priority:
+  - summary: "Replace wildcard subject with the exact expected value (e.g. repo:org/repo:ref:refs/heads/main)"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Audit all federated credentials for non-specific subjects; revoke and recreate with precise bindings"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Scope the UAMI/AppReg RBAC to minimum required resources; enable Entra ID sign-in risk alerts"
+    effort: MEDIUM
+    breaks_chain: false

@@ -1,0 +1,26 @@
+pattern:
+  name: "AKS Cluster with Kubernetes RBAC or Azure RBAC Disabled"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:aks_rbac_disabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:aks_no_network_policy"
+    relationship: same_resource_group
+
+impact: >
+  An AKS cluster has Kubernetes RBAC disabled (enableRBAC=false) or Azure RBAC integration
+  disabled, meaning any authenticated cluster user has unrestricted access to all Kubernetes
+  API operations including exec, secret reads, and workload manipulation. Combined with absent
+  network policy, a container breakout can reach all pods and the node's IMDS endpoint.
+
+remediation_priority:
+  - summary: "Enable Kubernetes RBAC and Azure RBAC integration (enableAzureRBAC=true); cannot be done on existing cluster — require rebuild"
+    effort: HIGH
+    breaks_chain: true
+  - summary: "Apply Calico or Azure NPM network policies to restrict pod-to-pod traffic"
+    effort: MEDIUM
+    breaks_chain: false

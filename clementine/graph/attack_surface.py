@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Iterable
 
 import networkx as nx
 
+from .azure_model import AZURE_IAM_TRAVERSAL_EDGES, AZURE_PRINCIPAL_NODE_TYPES, AzureEdgeType, AzureNodeType
 from .model import AWSEdgeType, AWSNodeType, IAM_TRAVERSAL_EDGES, IMDS_NODE_ID
 
 if TYPE_CHECKING:
@@ -49,6 +50,73 @@ _NODE_COLORS: dict[str, str] = {
     AWSNodeType.WILDCARD.value:                "#9ca3af",
 }
 
+_AZURE_NODE_COLORS: dict[str, str] = {
+    # Scope — slate-blue tones
+    AzureNodeType.TENANT.value:              "#1e3a5f",
+    AzureNodeType.MANAGEMENT_GROUP.value:    "#1e40af",
+    AzureNodeType.SUBSCRIPTION.value:        "#2563eb",
+    AzureNodeType.RESOURCE_GROUP.value:      "#3b82f6",
+    # Identity — teal tones (distinct from AWS purple)
+    AzureNodeType.ENTRA_USER.value:          "#0f766e",
+    AzureNodeType.ENTRA_GROUP.value:         "#0d9488",
+    AzureNodeType.ENTRA_DIRECTORY_ROLE.value: "#14b8a6",
+    AzureNodeType.SERVICE_PRINCIPAL.value:   "#0891b2",
+    AzureNodeType.APP_REGISTRATION.value:    "#06b6d4",
+    AzureNodeType.SYSTEM_ASSIGNED_MI.value:  "#0e7490",
+    AzureNodeType.USER_ASSIGNED_MI.value:    "#155e75",
+    # RBAC
+    AzureNodeType.ROLE_DEFINITION.value:     "#7dd3fc",
+    AzureNodeType.ROLE_ASSIGNMENT.value:     "#38bdf8",
+    AzureNodeType.FEDERATED_CREDENTIAL.value: "#0ea5e9",
+    # Compute — same blue as AWS EC2 but slightly greener
+    AzureNodeType.VIRTUAL_MACHINE.value:     "#1d4ed8",
+    AzureNodeType.VMSS.value:                "#1d4ed8",
+    AzureNodeType.APP_SERVICE.value:         "#2563eb",
+    AzureNodeType.FUNCTION_APP.value:        "#d97706",
+    AzureNodeType.CONTAINER_APP.value:       "#1d4ed8",
+    AzureNodeType.CONTAINER_INSTANCE.value:  "#1d4ed8",
+    AzureNodeType.AKS_CLUSTER.value:         "#1d4ed8",
+    AzureNodeType.AKS_NODE_POOL.value:       "#1d4ed8",
+    AzureNodeType.AKS_SERVICE_ACCOUNT.value: "#0f766e",
+    # Storage — green tones
+    AzureNodeType.STORAGE_ACCOUNT.value:     "#15803d",
+    AzureNodeType.BLOB_CONTAINER.value:      "#16a34a",
+    AzureNodeType.FILE_SHARE.value:          "#22c55e",
+    AzureNodeType.QUEUE.value:               "#4ade80",
+    AzureNodeType.TABLE.value:               "#86efac",
+    # Secrets — amber (matches AWS KMS/Secrets)
+    AzureNodeType.KEY_VAULT.value:           "#b45309",
+    AzureNodeType.KV_SECRET.value:           "#d97706",
+    AzureNodeType.KV_KEY.value:              "#fbbf24",
+    AzureNodeType.KV_CERTIFICATE.value:      "#fcd34d",
+    # Database
+    AzureNodeType.COSMOS_ACCOUNT.value:      "#15803d",
+    AzureNodeType.SQL_SERVER.value:          "#16a34a",
+    AzureNodeType.SQL_DATABASE.value:        "#22c55e",
+    AzureNodeType.MYSQL_SERVER.value:        "#4ade80",
+    AzureNodeType.POSTGRESQL_SERVER.value:   "#86efac",
+    # Network — cyan tones
+    AzureNodeType.VNET.value:               "#0891b2",
+    AzureNodeType.SUBNET.value:             "#0e7490",
+    AzureNodeType.NSG.value:               "#155e75",
+    AzureNodeType.NSG_RULE.value:          "#164e63",
+    AzureNodeType.ROUTE_TABLE.value:        "#083344",
+    AzureNodeType.PEERING.value:           "#0891b2",
+    AzureNodeType.PRIVATE_ENDPOINT.value:   "#0ea5e9",
+    AzureNodeType.APP_GATEWAY.value:        "#f97316",
+    AzureNodeType.FRONT_DOOR.value:         "#f97316",
+    AzureNodeType.AZURE_FIREWALL.value:     "#475569",
+    # Messaging
+    AzureNodeType.SERVICE_BUS_NS.value:     "#a855f7",
+    AzureNodeType.EVENT_HUBS_NS.value:      "#a855f7",
+    AzureNodeType.EVENT_GRID_TOPIC.value:   "#a855f7",
+    # Governance
+    AzureNodeType.LOG_ANALYTICS.value:      "#475569",
+    AzureNodeType.DIAGNOSTIC_SETTING.value: "#64748b",
+    AzureNodeType.POLICY_ASSIGNMENT.value:  "#6b7280",
+    AzureNodeType.DEFENDER_PLAN.value:      "#6b7280",
+}
+
 _EDGE_COLORS: dict[str, str] = {
     AWSEdgeType.CAN_ASSUME.value:        "#7c3aed",
     AWSEdgeType.CAN_PASS_ROLE.value:     "#7c3aed",
@@ -69,10 +137,41 @@ _EDGE_COLORS: dict[str, str] = {
     AWSEdgeType.WAF_PROTECTS.value:      "#475569",
 }
 
+_AZURE_EDGE_COLORS: dict[str, str] = {
+    AzureEdgeType.CAN_ASSUME_MI.value:          "#0891b2",
+    AzureEdgeType.HAS_RBAC_ROLE.value:          "#0ea5e9",
+    AzureEdgeType.HAS_DIRECTORY_ROLE.value:     "#14b8a6",
+    AzureEdgeType.HAS_API_PERMISSION.value:     "#0d9488",
+    AzureEdgeType.OWNS_APP_REGISTRATION.value:  "#06b6d4",
+    AzureEdgeType.CONSENT_GRANT.value:          "#a855f7",
+    AzureEdgeType.CAN_ATTACH_MI.value:          "#0891b2",
+    AzureEdgeType.MI_ATTACHED_TO.value:         "#38bdf8",
+    AzureEdgeType.WORKLOAD_ID_BOUND.value:      "#0ea5e9",
+    AzureEdgeType.OIDC_TRUSTS.value:            "#0891b2",
+    AzureEdgeType.ROUTES_TO.value:              "#94a3b8",
+    AzureEdgeType.INTERNET_FACING.value:        "#dc2626",
+    AzureEdgeType.PEERED_WITH.value:            "#0891b2",
+    AzureEdgeType.PRIVATE_LINK_TO.value:        "#0e7490",
+    AzureEdgeType.SSRF_REACHABLE.value:         "#dc2626",
+    AzureEdgeType.IMDS_EXPOSED.value:           "#dc2626",
+    AzureEdgeType.INVOKES.value:                "#f97316",
+    AzureEdgeType.ENCRYPTS_WITH.value:          "#fbbf24",
+    AzureEdgeType.STORES_SECRET_FOR.value:      "#d97706",
+    AzureEdgeType.POLICY_APPLIES_TO.value:      "#6b7280",
+    AzureEdgeType.PIM_ELIGIBLE_FOR.value:       "#7c3aed",
+    AzureEdgeType.CAN_RESET_CREDENTIAL_FOR.value: "#dc2626",
+    AzureEdgeType.MEMBER_OF.value:              "#94a3b8",
+}
+
 _DASHED_EDGES: frozenset[str] = frozenset({
     AWSEdgeType.SSRF_REACHABLE.value,
     AWSEdgeType.INTERNET_FACING.value,
     AWSEdgeType.KEY_POLICY_GRANTS.value,  # logical grant rather than runtime call
+    # Azure — dotted = potential / conditional paths
+    AzureEdgeType.SSRF_REACHABLE.value,
+    AzureEdgeType.IMDS_EXPOSED.value,
+    AzureEdgeType.PIM_ELIGIBLE_FOR.value,   # eligible but not yet active
+    AzureEdgeType.INTERNET_FACING.value,
 })
 
 _SEV_RADIUS: dict[str | None, int] = {
@@ -257,12 +356,17 @@ class AttackSurfaceAnalyzer:
         """
         if resource_id not in self._g:
             return []
-        allowed = set(edge_types) if edge_types is not None else set(IAM_TRAVERSAL_EDGES)
+        # Default traversal set covers both AWS and Azure IAM edges.
+        allowed = (
+            set(edge_types) if edge_types is not None
+            else (set(IAM_TRAVERSAL_EDGES) | AZURE_IAM_TRAVERSAL_EDGES)
+        )
         principal_types = {
+            # AWS principals
             AWSNodeType.IAM_USER.value,
             AWSNodeType.IAM_ROLE.value,
             AWSNodeType.EKS_SERVICE_ACCOUNT.value,
-        }
+        } | AZURE_PRINCIPAL_NODE_TYPES
         candidates = [
             n for n, d in self._g.nodes(data=True)
             if d.get("node_type") in principal_types and n != resource_id
@@ -401,14 +505,17 @@ class AttackSurfaceAnalyzer:
                     ):
                         severity = fsev
 
+            # Infer provider from node_type prefix (azure types start with "az_")
+            provider = "azure" if node_type.startswith("az_") else "aws"
             cy_nodes.append({
                 "data": {
                     "id": node_id,
                     "label": (data.get("label") or node_id)[:40],
                     "type": node_type,
+                    "provider": provider,
                     "severity": severity,
                     "internet_facing": bool(data.get("is_internet_facing")),
-                    "color": _NODE_COLORS.get(node_type, "#94a3b8"),
+                    "color": _NODE_COLORS.get(node_type) or _AZURE_NODE_COLORS.get(node_type, "#94a3b8"),
                     "border_color": _SEV_COLORS.get(severity, "#94a3b8"),
                     "radius": _SEV_RADIUS.get(severity, 8),
                 }
@@ -422,7 +529,7 @@ class AttackSurfaceAnalyzer:
                     "source": src,
                     "target": dst,
                     "label": etype,
-                    "color": _EDGE_COLORS.get(etype, "#94a3b8"),
+                    "color": _EDGE_COLORS.get(etype) or _AZURE_EDGE_COLORS.get(etype, "#94a3b8"),
                     "dashed": etype in _DASHED_EDGES,
                 }
             })

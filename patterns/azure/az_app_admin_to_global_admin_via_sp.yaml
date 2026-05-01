@@ -1,0 +1,39 @@
+pattern:
+  name: "Azure Application Admin → SP Credential Reset → Global Admin Escalation"
+  severity: CRITICAL
+
+entry:
+  type: azure_finding
+  check: "azure:app_admin_role_assigned"
+
+pivot:
+  - type: azure_finding
+    check: "azure:sp_owns_global_admin_app"
+    relationship:
+      via_edges:
+        - CAN_RESET_CREDENTIAL_FOR
+        - OWNS_APP_REGISTRATION
+      max_hops: 3
+
+  - type: azure_finding
+    check: "azure:global_admin_no_pim"
+    relationship: same_tenant
+
+impact: >
+  A principal with the Application Administrator directory role can add credentials
+  (certificates or secrets) to any application registration or service principal in the
+  tenant, including those owned by Global Administrators or assigned privileged API
+  permissions. The attacker resets the credentials of a Global Admin SP, authenticates
+  as that SP, and gains full Entra ID control (password resets, role assignments, MFA
+  bypass for all users). This is the highest-impact Entra ID escalation path.
+
+remediation_priority:
+  - summary: "Remove Application Administrator from all non-privileged principals; use scoped App Registration Owner instead"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enrol all Global Admin service principals in PIM with approval workflow"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Conditional Access policy requiring phishing-resistant MFA for all admin roles"
+    effort: LOW
+    breaks_chain: false

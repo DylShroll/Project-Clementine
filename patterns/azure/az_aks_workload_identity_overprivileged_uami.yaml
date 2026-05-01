@@ -1,0 +1,35 @@
+pattern:
+  name: "AKS Workload Identity → Overprivileged UAMI (Owner/Contributor on Subscription)"
+  severity: CRITICAL
+
+entry:
+  type: azure_finding
+  check: "azure:aks_workload_identity_enabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:uami_owner_or_contributor_on_subscription"
+    relationship:
+      via_edges:
+        - WORKLOAD_ID_BOUND
+        - HAS_RBAC_ROLE
+      max_hops: 4
+
+impact: >
+  An AKS service account is bound to a User-Assigned Managed Identity (UAMI) via workload
+  identity federation (OIDC). The UAMI holds Owner or Contributor on the subscription.
+  Any workload running as that Kubernetes service account — including workloads in shared
+  namespaces — can request an Azure AD token for the UAMI and perform subscription-wide
+  actions: creating VMs, accessing all storage accounts, modifying firewall rules, or
+  exfiltrating secrets from Key Vaults without any key vault access policy check.
+
+remediation_priority:
+  - summary: "Scope the UAMI to the minimum required resource (specific Key Vault or Storage Account, not subscription)"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Restrict workload identity bindings to dedicated namespaces with RBAC-enforced pod security"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Azure Policy to deny subscription-scope RBAC assignments for managed identities on AKS clusters"
+    effort: HIGH
+    breaks_chain: false

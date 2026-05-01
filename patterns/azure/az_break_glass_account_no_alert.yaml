@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Break-Glass Emergency Admin Account Without Sign-In Alerts"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:break_glass_account_present"
+
+pivot:
+  - type: azure_finding
+    check: "azure:break_glass_no_alert_rule"
+    relationship: same_tenant
+
+impact: >
+  Emergency-access (break-glass) accounts are exempt from Conditional Access by design.
+  If sign-in activity for these accounts is not monitored with near-real-time alerts,
+  unauthorized use — including attacker access after password compromise — goes undetected.
+  An attacker using a break-glass account inherits all tenant admin permissions without MFA.
+
+remediation_priority:
+  - summary: "Create a Log Analytics alert rule that fires within 1 minute on any sign-in by break-glass account UPN or object ID"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Store break-glass credentials in a physical vault with tamper-evident seals; rotate on a quarterly schedule"
+    effort: LOW
+    breaks_chain: false

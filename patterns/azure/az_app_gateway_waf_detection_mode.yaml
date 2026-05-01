@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Application Gateway WAF in Detection Mode (Not Blocking)"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:app_gateway_waf_detection_mode"
+
+pivot:
+  - type: app_finding
+    category: SSRF
+    relationship: same_subscription
+
+impact: >
+  An Application Gateway Web Application Firewall is deployed in Detection mode. Detection
+  mode logs matched rules but does NOT block malicious requests. Application-layer attacks
+  (SQL injection, XSS, SSRF, path traversal) pass through to the origin unimpeded.
+  The WAF provides a false sense of protection while offering zero mitigation.
+
+remediation_priority:
+  - summary: "Switch WAF policy from Detection to Prevention mode after reviewing detection logs for false positives"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Review existing WAF exclusion rules; remove any that suppress OWASP Core Rule Set categories wholesale"
+    effort: MEDIUM
+    breaks_chain: false

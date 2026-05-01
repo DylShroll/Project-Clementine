@@ -117,6 +117,14 @@ class Finding:
     triage_confidence: Optional[float] = None
     triage_is_false_positive: Optional[bool] = None
     triage_notes: Optional[str] = None
+    # Azure-specific fields — populated for azure provider findings, None for AWS
+    provider: str = "aws"
+    tenant_id: Optional[str] = None
+    subscription_id: Optional[str] = None
+    management_group_id: Optional[str] = None
+    resource_group: Optional[str] = None
+    azure_resource_id: Optional[str] = None
+    azure_region: Optional[str] = None
 
 
 @dataclass
@@ -290,6 +298,58 @@ CREATE TABLE IF NOT EXISTS ai_usage (
     cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
     created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Azure-specific normalized tables (all new; backward-compat with AWS-only DBs)
+CREATE TABLE IF NOT EXISTS azure_role_assignments (
+    assignment_id        TEXT PRIMARY KEY,
+    tenant_id            TEXT NOT NULL,
+    principal_id         TEXT NOT NULL,
+    principal_type       TEXT,
+    role_definition_id   TEXT NOT NULL,
+    role_definition_name TEXT,
+    scope                TEXT NOT NULL,
+    scope_level          TEXT,
+    inherited            INTEGER DEFAULT 0,
+    pim_eligible         INTEGER DEFAULT 0,
+    condition_expr       TEXT,
+    discovered_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS azure_federated_credentials (
+    id                    TEXT PRIMARY KEY,
+    parent_resource_id    TEXT NOT NULL,
+    issuer                TEXT NOT NULL,
+    subject               TEXT NOT NULL,
+    audiences             TEXT,
+    name                  TEXT,
+    matched_aks_cluster_id TEXT,
+    matched_k8s_subject   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS azure_compliance_findings (
+    id              TEXT PRIMARY KEY,
+    framework       TEXT NOT NULL,
+    control_id      TEXT NOT NULL,
+    resource_id     TEXT,
+    subscription_id TEXT,
+    state           TEXT NOT NULL,
+    severity        TEXT,
+    source          TEXT NOT NULL,
+    raw             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_provider
+    ON findings(provider);
+CREATE INDEX IF NOT EXISTS idx_findings_azure_resource
+    ON findings(azure_resource_id);
+CREATE INDEX IF NOT EXISTS idx_graph_nodes_provider
+    ON graph_nodes(provider, tenant_id);
+CREATE INDEX IF NOT EXISTS idx_azure_ra_principal
+    ON azure_role_assignments(principal_id);
+CREATE INDEX IF NOT EXISTS idx_azure_ra_scope
+    ON azure_role_assignments(scope);
+CREATE INDEX IF NOT EXISTS idx_compliance_state
+    ON azure_compliance_findings(framework, state);
 """
 
 # Lightweight, idempotent migrations for DBs created before the triage /
@@ -301,6 +361,37 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     ("findings",      "triage_is_false_positive", "ALTER TABLE findings ADD COLUMN triage_is_false_positive INTEGER"),
     ("findings",      "triage_notes",             "ALTER TABLE findings ADD COLUMN triage_notes TEXT"),
     ("attack_chains", "chain_source",             "ALTER TABLE attack_chains ADD COLUMN chain_source TEXT NOT NULL DEFAULT 'pattern'"),
+    # Azure columns on findings (all nullable; existing rows default to 'aws')
+    ("findings", "provider",            "ALTER TABLE findings ADD COLUMN provider TEXT DEFAULT 'aws'"),
+    ("findings", "tenant_id",           "ALTER TABLE findings ADD COLUMN tenant_id TEXT"),
+    ("findings", "subscription_id",     "ALTER TABLE findings ADD COLUMN subscription_id TEXT"),
+    ("findings", "management_group_id", "ALTER TABLE findings ADD COLUMN management_group_id TEXT"),
+    ("findings", "resource_group",      "ALTER TABLE findings ADD COLUMN resource_group TEXT"),
+    ("findings", "azure_resource_id",   "ALTER TABLE findings ADD COLUMN azure_resource_id TEXT"),
+    ("findings", "azure_region",        "ALTER TABLE findings ADD COLUMN azure_region TEXT"),
+    # Azure columns on graph_nodes
+    ("graph_nodes", "provider",            "ALTER TABLE graph_nodes ADD COLUMN provider TEXT DEFAULT 'aws'"),
+    ("graph_nodes", "tenant_id",           "ALTER TABLE graph_nodes ADD COLUMN tenant_id TEXT"),
+    ("graph_nodes", "subscription_id",     "ALTER TABLE graph_nodes ADD COLUMN subscription_id TEXT"),
+    ("graph_nodes", "management_group_id", "ALTER TABLE graph_nodes ADD COLUMN management_group_id TEXT"),
+    ("graph_nodes", "resource_group",      "ALTER TABLE graph_nodes ADD COLUMN resource_group TEXT"),
+    ("graph_nodes", "azure_resource_id",   "ALTER TABLE graph_nodes ADD COLUMN azure_resource_id TEXT"),
+    ("graph_nodes", "node_kind",           "ALTER TABLE graph_nodes ADD COLUMN node_kind TEXT"),
+    ("graph_nodes", "compressed_alias",    "ALTER TABLE graph_nodes ADD COLUMN compressed_alias TEXT"),
+    # Azure columns on graph_edges
+    ("graph_edges", "provider",             "ALTER TABLE graph_edges ADD COLUMN provider TEXT DEFAULT 'aws'"),
+    ("graph_edges", "edge_kind",            "ALTER TABLE graph_edges ADD COLUMN edge_kind TEXT"),
+    ("graph_edges", "role_definition_id",   "ALTER TABLE graph_edges ADD COLUMN role_definition_id TEXT"),
+    ("graph_edges", "scope",                "ALTER TABLE graph_edges ADD COLUMN scope TEXT"),
+    ("graph_edges", "scope_level",          "ALTER TABLE graph_edges ADD COLUMN scope_level TEXT"),
+    ("graph_edges", "inherited",            "ALTER TABLE graph_edges ADD COLUMN inherited INTEGER DEFAULT 0"),
+    ("graph_edges", "source_assignment_id", "ALTER TABLE graph_edges ADD COLUMN source_assignment_id TEXT"),
+    ("graph_edges", "condition_expr",       "ALTER TABLE graph_edges ADD COLUMN condition_expr TEXT"),
+    ("graph_edges", "pim_eligible",         "ALTER TABLE graph_edges ADD COLUMN pim_eligible INTEGER DEFAULT 0"),
+    ("graph_edges", "audience",             "ALTER TABLE graph_edges ADD COLUMN audience TEXT"),
+    # Azure columns on enrichment_status
+    ("enrichment_status", "provider",  "ALTER TABLE enrichment_status ADD COLUMN provider TEXT DEFAULT 'aws'"),
+    ("enrichment_status", "scope_id",  "ALTER TABLE enrichment_status ADD COLUMN scope_id TEXT"),
 ]
 
 
@@ -408,13 +499,17 @@ class FindingsDB:
                     resource_type, resource_id, aws_account_id, aws_region,
                     evidence_type, evidence_data, remediation_summary,
                     remediation_cli, remediation_iac, remediation_doc_url,
-                    compliance_mappings, confidence, is_validated, raw_source_data
+                    compliance_mappings, confidence, is_validated, raw_source_data,
+                    provider, tenant_id, subscription_id, management_group_id,
+                    resource_group, azure_resource_id, azure_region
                 ) VALUES (
                     :id, :source, :phase, :severity, :category, :title, :description,
                     :resource_type, :resource_id, :aws_account_id, :aws_region,
                     :evidence_type, :evidence_data, :remediation_summary,
                     :remediation_cli, :remediation_iac, :remediation_doc_url,
-                    :compliance_mappings, :confidence, :is_validated, :raw_source_data
+                    :compliance_mappings, :confidence, :is_validated, :raw_source_data,
+                    :provider, :tenant_id, :subscription_id, :management_group_id,
+                    :resource_group, :azure_resource_id, :azure_region
                 )
                 """,
                 {
@@ -434,6 +529,7 @@ class FindingsDB:
         severity: Optional[Severity] = None,
         source: Optional[str] = None,
         category: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> list[Finding]:
         """Query findings with optional filters.  Returns all matching rows."""
         clauses: list[str] = []
@@ -452,6 +548,9 @@ class FindingsDB:
             # Support prefix matching (e.g. "WSTG-INPV") for broad category queries
             clauses.append("category LIKE ?")
             params.append(f"{category}%")
+        if provider is not None:
+            clauses.append("provider = ?")
+            params.append(provider)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = f"SELECT * FROM findings {where} ORDER BY severity, created_at"
@@ -651,21 +750,45 @@ class FindingsDB:
         label: str,
         properties: dict,
         is_internet_facing: bool = False,
+        *,
+        provider: str = "aws",
+        tenant_id: Optional[str] = None,
+        subscription_id: Optional[str] = None,
+        management_group_id: Optional[str] = None,
+        resource_group: Optional[str] = None,
+        azure_resource_id: Optional[str] = None,
+        node_kind: Optional[str] = None,
+        compressed_alias: Optional[str] = None,
     ) -> None:
         """Persist a graph node; merges properties on conflict."""
         props_json = json.dumps(properties)
         async with self._write_lock:
             await self._conn.execute(
                 """
-                INSERT INTO graph_nodes (node_id, node_type, label, properties, internet_facing)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO graph_nodes (
+                    node_id, node_type, label, properties, internet_facing,
+                    provider, tenant_id, subscription_id, management_group_id,
+                    resource_group, azure_resource_id, node_kind, compressed_alias
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_id) DO UPDATE SET
                     label = excluded.label,
                     node_type = excluded.node_type,
                     properties = excluded.properties,
-                    internet_facing = MAX(internet_facing, excluded.internet_facing)
+                    internet_facing = MAX(internet_facing, excluded.internet_facing),
+                    provider = excluded.provider,
+                    tenant_id = COALESCE(excluded.tenant_id, tenant_id),
+                    subscription_id = COALESCE(excluded.subscription_id, subscription_id),
+                    management_group_id = COALESCE(excluded.management_group_id, management_group_id),
+                    resource_group = COALESCE(excluded.resource_group, resource_group),
+                    azure_resource_id = COALESCE(excluded.azure_resource_id, azure_resource_id),
+                    node_kind = COALESCE(excluded.node_kind, node_kind),
+                    compressed_alias = COALESCE(excluded.compressed_alias, compressed_alias)
                 """,
-                (node_id, node_type, label[:500], props_json, int(is_internet_facing)),
+                (
+                    node_id, node_type, label[:500], props_json, int(is_internet_facing),
+                    provider, tenant_id, subscription_id, management_group_id,
+                    resource_group, azure_resource_id, node_kind, compressed_alias,
+                ),
             )
             await self._conn.commit()
 
@@ -680,6 +803,16 @@ class FindingsDB:
         target_id: str,
         edge_type: str,
         properties: Optional[dict] = None,
+        provider: str = "aws",
+        edge_kind: Optional[str] = None,
+        role_definition_id: Optional[str] = None,
+        scope: Optional[str] = None,
+        scope_level: Optional[str] = None,
+        inherited: bool = False,
+        source_assignment_id: Optional[str] = None,
+        condition_expr: Optional[str] = None,
+        pim_eligible: bool = False,
+        audience: Optional[str] = None,
     ) -> None:
         """Insert (or merge) a typed edge with optional properties.
 
@@ -702,10 +835,18 @@ class FindingsDB:
                 edge_id = str(uuid.uuid4())
                 await self._conn.execute(
                     """
-                    INSERT INTO graph_edges (edge_id, source_id, target_id, edge_type, properties)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO graph_edges (
+                        edge_id, source_id, target_id, edge_type, properties,
+                        provider, edge_kind, role_definition_id, scope, scope_level,
+                        inherited, source_assignment_id, condition_expr, pim_eligible, audience
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (edge_id, source_id, target_id, edge_type, json.dumps(props)),
+                    (
+                        edge_id, source_id, target_id, edge_type, json.dumps(props),
+                        provider, edge_kind, role_definition_id, scope, scope_level,
+                        int(inherited), source_assignment_id, condition_expr,
+                        int(pim_eligible), audience,
+                    ),
                 )
             else:
                 existing_props = json.loads(row["properties"]) if row["properties"] else {}
@@ -782,6 +923,142 @@ class FindingsDB:
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Azure-specific tables
+    # ------------------------------------------------------------------
+
+    async def insert_azure_role_assignment(self, d: dict) -> None:
+        """Upsert a single Azure role assignment row."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT INTO azure_role_assignments (
+                    assignment_id, tenant_id, principal_id, principal_type,
+                    role_definition_id, role_definition_name, scope, scope_level,
+                    inherited, pim_eligible, condition_expr
+                ) VALUES (
+                    :assignment_id, :tenant_id, :principal_id, :principal_type,
+                    :role_definition_id, :role_definition_name, :scope, :scope_level,
+                    :inherited, :pim_eligible, :condition_expr
+                )
+                ON CONFLICT(assignment_id) DO UPDATE SET
+                    scope_level = excluded.scope_level,
+                    inherited = excluded.inherited,
+                    pim_eligible = excluded.pim_eligible
+                """,
+                {
+                    "assignment_id": d.get("assignment_id", str(uuid.uuid4())),
+                    "tenant_id": d.get("tenant_id", ""),
+                    "principal_id": d.get("principal_id", ""),
+                    "principal_type": d.get("principal_type"),
+                    "role_definition_id": d.get("role_definition_id", ""),
+                    "role_definition_name": d.get("role_definition_name"),
+                    "scope": d.get("scope", ""),
+                    "scope_level": d.get("scope_level"),
+                    "inherited": int(d.get("inherited", False)),
+                    "pim_eligible": int(d.get("pim_eligible", False)),
+                    "condition_expr": d.get("condition_expr"),
+                },
+            )
+            await self._conn.commit()
+
+    async def get_azure_role_assignments(
+        self, scope_prefix: Optional[str] = None
+    ) -> list[dict]:
+        """Return Azure role assignments, optionally filtered by scope prefix."""
+        if scope_prefix:
+            sql = "SELECT * FROM azure_role_assignments WHERE scope LIKE ? ORDER BY scope"
+            params = [f"{scope_prefix}%"]
+        else:
+            sql = "SELECT * FROM azure_role_assignments ORDER BY scope"
+            params = []
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def insert_azure_federated_credential(self, d: dict) -> None:
+        """Upsert a federated identity credential row."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT INTO azure_federated_credentials (
+                    id, parent_resource_id, issuer, subject, audiences, name,
+                    matched_aks_cluster_id, matched_k8s_subject
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    matched_aks_cluster_id = COALESCE(excluded.matched_aks_cluster_id, matched_aks_cluster_id),
+                    matched_k8s_subject = COALESCE(excluded.matched_k8s_subject, matched_k8s_subject)
+                """,
+                (
+                    d.get("id", str(uuid.uuid4())),
+                    d.get("parent_resource_id", ""),
+                    d.get("issuer", ""),
+                    d.get("subject", ""),
+                    json.dumps(d.get("audiences", [])),
+                    d.get("name"),
+                    d.get("matched_aks_cluster_id"),
+                    d.get("matched_k8s_subject"),
+                ),
+            )
+            await self._conn.commit()
+
+    async def get_azure_federated_credentials(
+        self, app_id: Optional[str] = None
+    ) -> list[dict]:
+        """Return federated credentials, optionally for a specific app/UAMI."""
+        if app_id:
+            sql = "SELECT * FROM azure_federated_credentials WHERE parent_resource_id = ?"
+            params = [app_id]
+        else:
+            sql = "SELECT * FROM azure_federated_credentials"
+            params = []
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def insert_azure_compliance_finding(self, d: dict) -> None:
+        """Insert a compliance finding from Prowler or Defender for Cloud."""
+        async with self._write_lock:
+            await self._conn.execute(
+                """
+                INSERT OR IGNORE INTO azure_compliance_findings (
+                    id, framework, control_id, resource_id, subscription_id,
+                    state, severity, source, raw
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    d.get("id", str(uuid.uuid4())),
+                    d.get("framework", ""),
+                    d.get("control_id", ""),
+                    d.get("resource_id"),
+                    d.get("subscription_id"),
+                    d.get("state", ""),
+                    d.get("severity"),
+                    d.get("source", ""),
+                    json.dumps(d.get("raw")) if d.get("raw") else None,
+                ),
+            )
+            await self._conn.commit()
+
+    async def get_azure_compliance_findings(
+        self,
+        framework: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> list[dict]:
+        """Return compliance findings, optionally filtered by framework and state."""
+        clauses, params = [], []
+        if framework:
+            clauses.append("framework = ?")
+            params.append(framework)
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = f"SELECT * FROM azure_compliance_findings {where} ORDER BY framework, control_id"
+        async with self._conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
     # AI usage telemetry
@@ -874,7 +1151,7 @@ class FindingsDB:
 
     async def get_graph_nodes(self) -> list:
         """Return all persisted graph nodes as GraphNode objects."""
-        from .graph.model import AWSNodeType, GraphNode  # local import avoids cycles
+        from .graph.model import GraphNode  # local import avoids cycles
         async with self._conn.execute(
             "SELECT node_id, node_type, label, properties, internet_facing FROM graph_nodes"
         ) as cur:
@@ -882,14 +1159,10 @@ class FindingsDB:
 
         nodes = []
         for row in rows:
-            try:
-                ntype = AWSNodeType(row["node_type"])
-            except ValueError:
-                ntype = AWSNodeType.EC2_INSTANCE  # safe fallback
             props = json.loads(row["properties"]) if row["properties"] else {}
             nodes.append(GraphNode(
                 node_id=row["node_id"],
-                node_type=ntype,
+                node_type=row["node_type"],  # raw string; AWSNodeType and AzureNodeType are both str enums
                 label=row["label"],
                 properties=props,
                 is_internet_facing=bool(row["internet_facing"]),
@@ -933,6 +1206,13 @@ def _row_to_finding(row: aiosqlite.Row) -> Finding:
             else None
         ),
         triage_notes=d.get("triage_notes"),
+        provider=d.get("provider") or "aws",
+        tenant_id=d.get("tenant_id"),
+        subscription_id=d.get("subscription_id"),
+        management_group_id=d.get("management_group_id"),
+        resource_group=d.get("resource_group"),
+        azure_resource_id=d.get("azure_resource_id"),
+        azure_region=d.get("azure_region"),
     )
 
 

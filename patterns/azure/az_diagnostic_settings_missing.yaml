@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Resource Missing Diagnostic Settings (Audit Logging Gap)"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:diagnostic_settings_missing"
+
+pivot:
+  - type: azure_finding
+    check: "azure:log_analytics_workspace_absent"
+    relationship: same_subscription
+
+impact: >
+  Critical Azure resources (Key Vaults, storage accounts, NSGs, Azure AD) have no diagnostic
+  settings forwarding audit logs to Log Analytics or a storage account. Without logs, security
+  incidents — including unauthorized secret reads, role assignment changes, and firewall rule
+  modifications — are undetectable. An attacker can operate freely in the blind spot.
+
+remediation_priority:
+  - summary: "Deploy diagnostic settings for all Key Vaults, storage accounts, and NSGs forwarding to Log Analytics"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Azure Activity Log diagnostic settings at the subscription level"
+    effort: LOW
+    breaks_chain: false

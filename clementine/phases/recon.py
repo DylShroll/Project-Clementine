@@ -118,6 +118,13 @@ async def run_recon(
             log.warning("[Phase 1] aws_knowledge has no search tool — skipping")
 
     # ------------------------------------------------------------------
+    # 1c-Azure. Azure DNS classification and WAF detection
+    # ------------------------------------------------------------------
+    if cfg.azure.enabled:
+        await _classify_azure_dns(cfg, db, scope)
+        await _detect_azure_waf(cfg, db, scope, limiter)
+
+    # ------------------------------------------------------------------
     # 1d. Persist the target manifest
     # ------------------------------------------------------------------
     manifest = {
@@ -179,6 +186,128 @@ Constraints:
 
 Proceed now.
 """
+
+
+# ---------------------------------------------------------------------------
+# Azure DNS and WAF detection helpers
+# ---------------------------------------------------------------------------
+
+# Azure service suffixes → AzureNodeType hint (string to avoid circular import)
+_AZURE_DNS_SUFFIXES: dict[str, str] = {
+    ".azurewebsites.net":       "az_app_service",
+    ".azurefd.net":             "az_front_door",
+    ".blob.core.windows.net":   "az_blob_container",
+    ".file.core.windows.net":   "az_file_share",
+    ".queue.core.windows.net":  "az_queue",
+    ".table.core.windows.net":  "az_table",
+    ".vault.azure.net":         "az_key_vault",
+    ".servicebus.windows.net":  "az_service_bus_ns",
+    ".azurecontainer.io":       "az_container_instance",
+    ".azurecr.io":              "az_storage_account",  # ACR — best approximation
+    ".database.windows.net":    "az_sql_server",
+    ".documents.azure.com":     "az_cosmos_account",
+    ".azure-api.net":           "az_app_gateway",      # APIM
+    ".cloudapp.azure.com":      "az_vm",
+    ".trafficmanager.net":      "az_front_door",       # Traffic Manager profile
+    ".azureedge.net":           "az_front_door",       # CDN
+}
+
+
+async def _classify_azure_dns(
+    cfg: ClementineConfig,
+    db: FindingsDB,
+    scope: ScopeGuard,
+) -> None:
+    """Classify in-scope domains against Azure service suffixes.
+
+    For each matching domain, upsert a candidate AzureNodeType graph node
+    so Phase 2b enrichment can correlate it with KQL-discovered resources.
+    """
+    try:
+        from ..graph import GraphBuilder
+        builder = GraphBuilder(db)
+        azure_hints: list[tuple[str, str]] = []
+
+        for domain in cfg.target.scope.include_domains:
+            for suffix, node_type in _AZURE_DNS_SUFFIXES.items():
+                if domain.lower().endswith(suffix):
+                    azure_hints.append((domain, node_type))
+                    log.info("[Phase 1] Azure DNS hint: %s → %s", domain, node_type)
+                    break
+
+        if azure_hints:
+            for domain, node_type in azure_hints:
+                await db.upsert_graph_node(
+                    node_id=f"dns://{domain}",
+                    node_type=node_type,
+                    label=domain,
+                    provider="azure",
+                    properties=json.dumps({"dns_name": domain, "is_candidate": True}),
+                )
+    except Exception as exc:
+        log.warning("[Phase 1] Azure DNS classification failed: %s", exc)
+
+
+async def _detect_azure_waf(
+    cfg: ClementineConfig,
+    db: FindingsDB,
+    scope: ScopeGuard,
+    limiter: RateLimiter,
+) -> None:
+    """Probe response headers for Azure WAF / Front Door / CDN signals.
+
+    Checks X-Azure-Ref (Front Door), Server: Microsoft-Azure-Application-Gateway,
+    and X-Cache with Azure values. Emits a graph node for each detected service.
+    This is a passive observation from an HTTP HEAD request — no active probing.
+    """
+    import asyncio
+    import aiohttp
+
+    target_url = cfg.target.url
+    try:
+        scope.check_url(target_url)
+    except Exception:
+        return
+
+    try:
+        async with limiter:
+            async with aiohttp.ClientSession() as session:
+                async with session.head(
+                    target_url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    allow_redirects=True,
+                    ssl=False,
+                ) as resp:
+                    headers = {k.lower(): v for k, v in resp.headers.items()}
+
+        node_id = None
+        node_type = None
+
+        if "x-azure-ref" in headers:
+            node_id = f"azure-front-door://{target_url}"
+            node_type = "az_front_door"
+            log.info("[Phase 1] Detected Azure Front Door on %s (X-Azure-Ref header)", target_url)
+        elif "microsoft-azure-application-gateway" in headers.get("server", "").lower():
+            node_id = f"azure-app-gateway://{target_url}"
+            node_type = "az_app_gateway"
+            log.info("[Phase 1] Detected Azure Application Gateway on %s", target_url)
+        elif "azure" in headers.get("x-cache", "").lower():
+            node_id = f"azure-cdn://{target_url}"
+            node_type = "az_front_door"
+            log.info("[Phase 1] Detected Azure CDN on %s", target_url)
+
+        if node_id and node_type:
+            await db.upsert_graph_node(
+                node_id=node_id,
+                node_type=node_type,
+                label=target_url[:80],
+                provider="azure",
+                is_internet_facing=True,
+                properties=json.dumps({"source": "waf_probe", "url": target_url}),
+            )
+
+    except Exception as exc:
+        log.debug("[Phase 1] Azure WAF probe failed (non-critical): %s", exc)
 
 
 def _format_creds_hint(auth: Any) -> str:

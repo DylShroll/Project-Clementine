@@ -1,0 +1,10 @@
+securityresources
+| where type == "microsoft.security/regulatorycompliancestandards/regulatorycompliancecontrols"
+| extend standard = tostring(split(id, "/")[8])
+| extend control  = tostring(properties.description)
+| extend state    = tostring(properties.state)
+| where standard in (
+    "CIS-Azure-2.0.0", "CIS-Azure-3.0.0", "Azure-CSPM",
+    "MCSB", "NIST-SP-800-53-Rev5", "ISO27001-2013"
+  )
+| project standard, control, state

@@ -1,0 +1,34 @@
+pattern:
+  name: "Azure VM RunCommand with Privileged Managed Identity → Full Takeover"
+  severity: CRITICAL
+
+entry:
+  type: azure_finding
+  check: "azure:principal_has_run_command_permission"
+
+pivot:
+  - type: azure_finding
+    check: "azure:vm_has_privileged_mi"
+    relationship:
+      via_edges:
+        - HAS_RBAC_ROLE
+        - MI_ATTACHED_TO
+      max_hops: 4
+
+impact: >
+  A principal with Microsoft.Compute/virtualMachines/runCommand/action can execute arbitrary
+  commands inside any VM in scope without interactive login or SSH access. If the VM has a
+  managed identity with Contributor or Owner on the subscription, the attacker can exfiltrate
+  the MI token from the IMDS endpoint inside the VM and use it to control the entire subscription.
+  Combined with Azure Automation or VM extensions, this attack is fully scriptable.
+
+remediation_priority:
+  - summary: "Remove runCommand/action from all custom roles; restrict to Contributor only on specific VMs that require remote management"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Scope managed identity RBAC assignments to the minimum resources; remove subscription-scope Owner/Contributor"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Defender for Servers Process Anomaly alerts and Just-In-Time VM access"
+    effort: MEDIUM
+    breaks_chain: false

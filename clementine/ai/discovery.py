@@ -94,8 +94,9 @@ class DiscoveredChain(BaseModel):
     narrative: str = Field(
         description=(
             "Two to five sentences explaining how an attacker would traverse "
-            "the chain. Reference specific findings, resources, and AWS "
-            "services by name. No hand-waving."
+            "the chain. Reference specific findings, resources, and cloud "
+            "services by name. For multi-cloud chains, explicitly name the "
+            "cloud-boundary crossing step. No hand-waving."
         ),
     )
     remediation_actions: list[DiscoveredRemediation] = Field(
@@ -121,49 +122,65 @@ penetration-test run. Your job is to identify *compound attack chains* that \
 a rule-based correlator has missed.
 
 You will be given:
-* The full list of findings (app-layer and AWS-infrastructure), each with \
-  a UUID, severity, category, title, and resource context.
-* Every edge in the target's AWS resource graph (source_arn → target_arn, \
-  relationship).
+* The full list of findings (app-layer, AWS-infrastructure, and Azure-infrastructure), \
+  each with a UUID, severity, category, title, provider, and resource context.
+* Every edge in the target's resource graph (source → target, relationship). \
+  The graph contains both AWS nodes (ARN-style IDs) and Azure nodes (resource \
+  IDs starting with /subscriptions/…). Edge types include both AWS IAM \
+  traversal edges (CAN_ASSUME, OIDC_TRUSTS, etc.) and Azure equivalents \
+  (CAN_ASSUME_MI, HAS_RBAC_ROLE, WORKLOAD_ID_BOUND, PIM_ELIGIBLE_FOR, etc.).
 * A summary of every attack chain the static rule engine already produced, \
   so you can avoid duplicating them.
 
 An *attack chain* is not merely a list of findings that happen to exist in \
 the same environment. A chain requires a causal path: finding A grants the \
-attacker capability that they then use to exploit finding B, escalating to \
-the final impact. Examples of valid chain shapes:
+attacker capability that they then use to exploit finding B.
 
-* **SSRF + IMDSv1** — an SSRF on an EC2-hosted service reaches the metadata \
-  endpoint, steals the instance role credentials, and uses that role to act \
-  against other AWS resources.
-* **Weak IAM + exposed bucket** — a permissive IAM role attached to a \
-  compromised compute resource grants access to an S3 bucket that contains \
-  sensitive data.
-* **Stored XSS + session cookie without HttpOnly** — an attacker stores XSS \
-  on a shared page, then reads admin session cookies via the stolen DOM \
-  access.
+**Multi-cloud chains are highest priority.** Look actively for paths that cross \
+cloud boundaries. Valid multi-cloud chain shapes include:
+
+* **GitHub Actions → Azure SP → Azure resources** — a GitHub repository with \
+  an overly broad OIDC federated credential can obtain an Azure token and \
+  pivot to Key Vaults or subscription-level RBAC.
+* **SSRF on AWS-hosted app → Azure IMDS via peering** — an SSRF on an EC2 \
+  instance reachable via VPN or VNet peering can reach the Azure IMDS endpoint \
+  and exfiltrate a managed identity token.
+* **Azure Workload Identity → UAMI → AWS via IRSA or STS federation** — a \
+  Kubernetes workload identity bound to a UAMI with federated AWS credentials \
+  can request STS tokens and act against AWS resources.
+* **SSRF + Azure Function App identity endpoint** — SSRF in an App Service \
+  app reaches the internal IDENTITY_ENDPOINT, exfiltrates an MI token, then \
+  uses it against Key Vault secrets that include AWS access key IDs.
+
+Multi-cloud chains that are fully evidenced by real findings in the graph \
+should be assigned **confidence +0.2 above** a single-provider equivalent \
+and labelled with ``provider_lane: multi`` in the narrative.
+
+Single-provider chains (AWS-only or Azure-only):
+* **SSRF + IMDSv1** — SSRF → EC2 IMDS → instance role credentials.
+* **Weak IAM + exposed bucket** — permissive IAM role → S3 bucket with sensitive data.
+* **AKS workload identity overprivilege** — AKS service account bound to UAMI \
+  with subscription Owner — any pod in the namespace can own the subscription.
+* **App Admin → Global Admin via SP credential reset** — Application Admin resets \
+  credentials of a Global Admin service principal.
 
 Non-chains (do NOT propose these):
 * Two unrelated findings on different resources with no graph edge or \
   shared identity between them.
 * A single finding restated as a "chain of one".
-* Speculative chains that require evidence not present in the input \
-  (e.g. "there might also be a privilege escalation if the role has *:*").
+* Speculative chains that require evidence not present in the input.
 
 For every chain you propose:
 * **entry_finding_id** must be a real ID from the provided findings list.
-* **component_finding_ids** must all be real IDs, must include the entry \
-  as the first item, and must be in exploit order (entry → pivots → impact).
-* **narrative** must reference specific findings and resources by name. \
-  Avoid generic phrases like "the attacker could then pivot".
+* **component_finding_ids** must all be real IDs, in exploit order.
+* **narrative** must reference specific findings, providers, and resources by name. \
+  For multi-cloud chains, explicitly state the cloud-boundary crossing step.
 * **confidence** reflects how firmly the evidence supports the causal path. \
-  If the chain requires an edge that only *might* exist, cap at 0.55.
-* **remediation_actions** should list the cheapest chain-breaking control \
-  first — the thing a defender could change tomorrow.
+  Cap at 0.55 if any edge is speculative. Add 0.2 for fully-evidenced multi-cloud chains.
+* **remediation_actions**: cheapest chain-breaking control first.
 
-Be conservative. It is better to propose zero chains than to propose chains \
-built on findings that aren't actually linked. The rule engine already \
-covered the obvious patterns; your value is finding the non-obvious ones.
+Be conservative. Propose zero chains rather than speculative ones. \
+The rule engine covered obvious patterns; your value is the non-obvious.
 """
 
 
@@ -385,15 +402,16 @@ def _render_discovery_prompt(
     parts: list[str] = []
 
     parts.append("## FINDINGS")
-    parts.append("One per line: finding_id | severity | category | title | resource")
+    parts.append("One per line: finding_id | provider | severity | category | title | resource")
     for f in findings:
         resource = (
             f"{f.resource_type or '-'}:{f.resource_id or '-'}"
             if (f.resource_type or f.resource_id)
             else "-"
         )
+        provider = getattr(f, "provider", "aws") or "aws"
         parts.append(
-            f"{f.id} | {f.severity.value} | {f.category} | "
+            f"{f.id} | {provider} | {f.severity.value} | {f.category} | "
             f"{_one_line(f.title)} | {resource}"
         )
 

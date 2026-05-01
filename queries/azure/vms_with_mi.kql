@@ -1,0 +1,10 @@
+Resources
+| where type =~ "microsoft.compute/virtualmachines"
+| extend identityType = tostring(identity.type)
+| extend systemMI     = tostring(identity.principalId)
+| extend userMIs      = identity.userAssignedIdentities
+| extend nicIds       = properties.networkProfile.networkInterfaces
+| project id, name, resourceGroup, subscriptionId, location,
+          identityType, systemMI, userMIs, nicIds,
+          osType = tostring(properties.storageProfile.osDisk.osType),
+          imdsv2 = tostring(properties.securityProfile.uefiSettings)

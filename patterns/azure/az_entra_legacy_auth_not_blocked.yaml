@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Entra ID Legacy Authentication Protocols Not Blocked"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:legacy_auth_not_blocked_by_ca"
+
+pivot:
+  - type: azure_finding
+    check: "azure:legacy_auth_sign_ins_detected"
+    relationship: same_tenant
+
+impact: >
+  Legacy authentication protocols (Basic Auth, IMAP, POP3, SMTP AUTH, older MAPI) bypass
+  all Conditional Access policies including MFA requirements. Any account that uses legacy
+  auth is directly brute-forceable with a username and password. Password spray attacks
+  against legacy auth endpoints are the most common initial access technique for Microsoft
+  365 tenants. A single compromised account may pivot to Teams, SharePoint, or Exchange data.
+
+remediation_priority:
+  - summary: "Block legacy authentication via Conditional Access policy (Condition: client apps = legacy, Action: block)"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Enable sign-in risk detection in Entra ID Protection; auto-remediate risky sign-ins"
+    effort: MEDIUM
+    breaks_chain: false

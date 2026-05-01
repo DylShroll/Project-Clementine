@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Defender Plans Disabled for Critical Resource Types"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:defender_plan_disabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:unprotected_resource_type_in_use"
+    relationship: same_subscription
+
+impact: >
+  Defender for Cloud plans (Servers, Storage, Key Vault, Containers, Databases) are disabled
+  for one or more resource types actively in use. Without Defender, threat detection signals
+  for IMDS exfiltration, malware execution, anomalous data access, and lateral movement are
+  not generated. Attackers can complete intrusion kill chains without triggering any alert.
+
+remediation_priority:
+  - summary: "Enable Defender plans for all resource types present in the subscription (Servers P2, Storage, Key Vault, Containers, SQL)"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Set up Microsoft Sentinel or a SIEM to consume Defender alerts with automated response playbooks"
+    effort: HIGH
+    breaks_chain: false

@@ -111,6 +111,48 @@ class AWSConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Azure configuration
+# ---------------------------------------------------------------------------
+
+class AzureTenantConfig(BaseModel):
+    """One Entra tenant to audit."""
+    tenant_id: str
+    subscription_ids: list[str] = []         # empty = all visible subscriptions
+    management_group_ids: list[str] = []     # scan everything beneath, recursively
+    regions: list[str] = []                  # empty = all regions
+
+
+class AzureEngagementGuardrails(BaseModel):
+    """Per-engagement safety limits for Azure audit actions."""
+    allowed_subscriptions: list[str] = []    # empty = all in tenant config
+    skip_resource_types: list[str] = []
+    max_resources_per_type: int = 500        # prevents runaway scope-expansion loops
+    allow_imds_probe: bool = False           # IMDS token probes — off by default
+    allow_anonymous_blob_access_test: bool = True
+    allow_kv_secret_metadata_read: bool = True  # metadata only; never raw values
+    allow_sas_token_extraction: bool = True
+    allow_run_command_test: bool = False     # VM Run Command — too disruptive
+
+
+class AzureConfig(BaseModel):
+    """Azure cloud auditing configuration (Clementine 2.0 'Mandarin')."""
+    enabled: bool = False
+    tenants: list[AzureTenantConfig] = []
+    compliance_frameworks: list[str] = [
+        "cis_3.0_azure",
+        "mcsb_azure",
+        "nist_800_53_revision_5_azure",
+        "iso27001_2013_azure",
+        "soc2_azure",
+        "prowler_threatscore_azure",
+    ]
+    kql_queries_dir: Path = Path("./queries/azure")
+    guardrails: AzureEngagementGuardrails = AzureEngagementGuardrails()
+    pim_activation_cost: float = 0.7        # path-score discount for PIM_ELIGIBLE_FOR edges
+    expand_inherited_assignments: bool = True
+
+
+# ---------------------------------------------------------------------------
 # Compliance configuration
 # ---------------------------------------------------------------------------
 
@@ -182,12 +224,17 @@ class MCPServersConfig(BaseModel):
     All servers are optional so the orchestrator can gracefully degrade when
     a non-critical server is unavailable.
     """
+    # Existing servers
     autopentest: Optional[AnyServerConfig] = None
     cloud_audit: Optional[AnyServerConfig] = None
     prowler: Optional[AnyServerConfig] = None
     aws_knowledge: Optional[HttpServerConfig] = None
     aws_docs: Optional[StdioServerConfig] = None
     playwright: Optional[AnyServerConfig] = None
+    # Azure servers (Clementine 2.0)
+    azure_mcp: Optional[AnyServerConfig] = None        # @azure/mcp@latest
+    prowler_mcp: Optional[AnyServerConfig] = None      # prowler-mcp (unified AWS+Azure)
+    microsoft_learn: Optional[AnyServerConfig] = None  # learn.microsoft.com wrapper
 
     @model_validator(mode="before")
     @classmethod
@@ -301,6 +348,7 @@ class ClementineConfig(BaseModel):
     target: TargetConfig
     auth: AuthConfig = AuthConfig()
     aws: AWSConfig = AWSConfig()
+    azure: AzureConfig = AzureConfig()
     compliance: ComplianceConfig = ComplianceConfig()
     reporting: ReportingConfig = ReportingConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()

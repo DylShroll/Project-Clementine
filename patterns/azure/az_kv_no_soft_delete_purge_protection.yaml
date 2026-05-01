@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Key Vault Soft Delete or Purge Protection Disabled"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:kv_soft_delete_or_purge_protection_disabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:kv_has_critical_secrets"
+    relationship: same_resource_group
+
+impact: >
+  A Key Vault without soft delete and purge protection can have secrets, keys, and
+  certificates permanently deleted without recovery window. An insider threat or attacker
+  with Contributor or Key Vault Contributor can cause irreversible data loss. For vaults
+  storing encryption keys (CMK), deletion renders all encrypted data permanently inaccessible.
+
+remediation_priority:
+  - summary: "Enable soft delete (minimum 90-day retention) and purge protection on all Key Vaults"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Audit Key Vault delete operations in the activity log and alert on purge operations"
+    effort: LOW
+    breaks_chain: false

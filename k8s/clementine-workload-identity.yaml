@@ -1,0 +1,135 @@
+# Clementine AKS Workload Identity — ServiceAccount + Deployment
+#
+# Prerequisites:
+#   1. AKS cluster with OIDC issuer + workload identity enabled
+#   2. User-Assigned Managed Identity (UAMI) created in Azure
+#   3. Federated credential on the UAMI:
+#      subject: system:serviceaccount:<namespace>:clementine-orchestrator
+#      issuer:  <aks-oidc-issuer-url>
+#      audience: api://AzureADTokenExchange
+#   4. UAMI RBAC: minimum Reader on the assessment subscription(s);
+#      Key Vault Secrets User on any KV accessed during audit.
+#
+# Fill in <UAMI_CLIENT_ID>, <NAMESPACE>, <IMAGE>, and <SUBSCRIPTION_ID> before applying.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clementine
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clementine-orchestrator
+  namespace: clementine
+  annotations:
+    # Workload identity annotation — must match the federated credential subject.
+    azure.workload.identity/client-id: "<UAMI_CLIENT_ID>"
+  labels:
+    azure.workload.identity/use: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clementine-orchestrator
+  namespace: clementine
+  labels:
+    app: clementine-orchestrator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clementine-orchestrator
+  template:
+    metadata:
+      labels:
+        app: clementine-orchestrator
+        # Required label for the Azure Workload Identity webhook to inject
+        # AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_FEDERATED_TOKEN_FILE.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: clementine-orchestrator
+
+      # Security context — non-root, read-only root filesystem
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: clementine
+          image: "<IMAGE>:latest"
+          imagePullPolicy: Always
+
+          command: ["clementine", "run", "--config", "/config/engagement.yaml"]
+
+          env:
+            # azure-mcp reads these from the environment.
+            # The workload identity webhook injects AZURE_CLIENT_ID,
+            # AZURE_TENANT_ID, and AZURE_FEDERATED_TOKEN_FILE automatically
+            # when the pod label is set — no secrets needed.
+            - name: AZURE_MCP_INCLUDE_PRODUCTION_CREDENTIALS
+              value: "true"
+
+            # Target subscription for the audit — override per engagement.
+            - name: CLEMENTINE_AZURE_SUBSCRIPTION_ID
+              value: "<SUBSCRIPTION_ID>"
+
+            # AWS region for Bedrock (AI triage + discovery)
+            - name: AWS_DEFAULT_REGION
+              value: "us-east-1"
+
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: output
+              mountPath: /output
+
+          resources:
+            requests:
+              cpu:    "500m"
+              memory: "512Mi"
+            limits:
+              cpu:    "2"
+              memory: "2Gi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # prowler and azure-mcp write temp files
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: config
+          configMap:
+            name: clementine-engagement-config
+        - name: output
+          emptyDir: {}
+
+      restartPolicy: Always
+---
+# NetworkPolicy — restrict egress to Azure management APIs and Bedrock only.
+# Adjust as needed; this is a permissive baseline (DNS + HTTPS).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clementine-egress
+  namespace: clementine
+spec:
+  podSelector:
+    matchLabels:
+      app: clementine-orchestrator
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+    # HTTPS — Azure management APIs, Bedrock, npm registry (azure-mcp npx)
+    - ports:
+        - port: 443
+          protocol: TCP

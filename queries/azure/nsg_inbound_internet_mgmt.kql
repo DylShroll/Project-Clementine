@@ -1,0 +1,10 @@
+Resources
+| where type =~ "microsoft.network/networksecuritygroups"
+| mv-expand rule = properties.securityRules
+| where tostring(rule.properties.access) == "Allow"
+  and tostring(rule.properties.direction) == "Inbound"
+  and tostring(rule.properties.sourceAddressPrefix) in ("*", "Internet", "0.0.0.0/0")
+| extend port = tostring(rule.properties.destinationPortRange)
+| where port in ("*", "22", "3389", "3306", "5432", "1433", "6379", "27017", "9200")
+| project nsgId = id, nsgName = name, ruleName = tostring(rule.name), port,
+          subnets = properties.subnets, nics = properties.networkInterfaces

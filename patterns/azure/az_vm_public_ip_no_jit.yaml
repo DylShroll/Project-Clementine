@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure VM with Public IP and No Just-In-Time Access Policy"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:vm_has_public_ip"
+
+pivot:
+  - type: azure_finding
+    check: "azure:vm_jit_not_enabled"
+    relationship: same_resource_group
+
+impact: >
+  A virtual machine has a public IP address and no Just-In-Time (JIT) access policy.
+  Without JIT, management ports remain permanently open to any source that can route
+  to the public IP (or to all internet sources if an NSG rule allows it). The VM is
+  permanently exposed to brute force, vulnerability scanning, and exploitation of
+  internet-facing management services.
+
+remediation_priority:
+  - summary: "Enable Defender for Servers JIT access on all VMs with public IP addresses"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Remove public IP and use Azure Bastion or private endpoint for management access"
+    effort: MEDIUM
+    breaks_chain: false

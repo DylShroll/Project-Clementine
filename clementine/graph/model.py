@@ -84,9 +84,9 @@ IAM_TRAVERSAL_EDGES: frozenset[str] = frozenset({
 
 @dataclass
 class GraphNode:
-    """A node in the AWS knowledge graph."""
+    """A node in the knowledge graph (AWS or Azure)."""
     node_id: str
-    node_type: AWSNodeType
+    node_type: str  # AWSNodeType or AzureNodeType value; str so Azure nodes don't need coercion
     label: str
     properties: dict = field(default_factory=dict)
     is_internet_facing: bool = False

@@ -1,0 +1,33 @@
+pattern:
+  name: "Azure Custom Role with roleAssignments/write → Privilege Escalation"
+  severity: CRITICAL
+
+entry:
+  type: azure_finding
+  check: "azure:custom_role_with_role_assignment_write"
+
+pivot:
+  - type: azure_finding
+    check: "azure:principal_holds_custom_write_role"
+    relationship:
+      via_edges:
+        - HAS_RBAC_ROLE
+      max_hops: 3
+
+impact: >
+  A custom RBAC role definition includes the Microsoft.Authorization/roleAssignments/write
+  action. Any principal assigned this role can grant themselves or any other principal any
+  role — including Owner or User Access Administrator — on any resource within the scope of
+  the assignment. This is full privilege escalation to subscription owner without additional
+  access or credentials.
+
+remediation_priority:
+  - summary: "Remove Microsoft.Authorization/roleAssignments/write from all custom role definitions that do not explicitly require it"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Audit all principals holding this custom role and replace with least-privilege alternatives"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Azure Policy to deny custom role definitions containing wildcard actions on Authorization namespace"
+    effort: HIGH
+    breaks_chain: false

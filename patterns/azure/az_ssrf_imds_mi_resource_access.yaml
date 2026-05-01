@@ -1,0 +1,42 @@
+pattern:
+  name: "Azure SSRF → IMDS Token → Managed Identity Resource Access"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: SSRF
+
+pivot:
+  - type: azure_finding
+    check: "azure:imds_exposed"
+    relationship:
+      via_edges:
+        - SSRF_REACHABLE
+        - IMDS_EXPOSED
+      max_hops: 3
+
+  - type: azure_finding
+    check: "azure:mi_has_privileged_rbac"
+    relationship:
+      via_edges:
+        - CAN_ASSUME_MI
+        - HAS_RBAC_ROLE
+      max_hops: 4
+
+impact: >
+  An SSRF vulnerability allows the attacker to reach the Azure Instance Metadata Service
+  at 169.254.169.254. The attacker obtains an OAuth2 token for the VM's managed identity
+  and uses it to call Azure management APIs with the permissions attached to that identity.
+  If the managed identity holds Contributor or Owner on a subscription or resource group,
+  the attacker gains full control over all resources in that scope.
+
+remediation_priority:
+  - summary: "Block SSRF by validating and allowlisting all server-side URL targets"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Scope managed identity RBAC roles to the minimum required resources"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Azure Instance Metadata Service v2 (IMDSv2) on all VMs to require a session token"
+    effort: LOW
+    breaks_chain: false

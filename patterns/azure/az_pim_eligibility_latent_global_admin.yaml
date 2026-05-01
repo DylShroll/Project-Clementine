@@ -1,0 +1,31 @@
+pattern:
+  name: "Azure PIM-Eligible Global Admin without MFA Protection"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:pim_eligible_global_admin"
+
+pivot:
+  - type: azure_finding
+    check: "azure:conditional_access_no_mfa_for_admin"
+    relationship: same_tenant
+
+impact: >
+  One or more principals are eligible for the Global Administrator role via PIM but are not
+  protected by a Conditional Access policy requiring phishing-resistant MFA at activation.
+  Although PIM adds a friction step, an attacker who has compromised the eligible account's
+  password (via phishing, credential stuffing, or password spray) can self-activate Global
+  Admin, making themselves a permanent tenant administrator within the PIM approval window.
+  Without MFA enforcement, activation requires only the username and password.
+
+remediation_priority:
+  - summary: "Require phishing-resistant MFA (FIDO2 / certificate-based auth) as a Conditional Access condition for all PIM role activations"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enable PIM approval workflow requiring a second approver for Global Admin activation"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Reduce PIM eligibility window to ≤8 hours and enable activation justification requirement"
+    effort: LOW
+    breaks_chain: false

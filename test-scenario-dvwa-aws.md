@@ -1,8 +1,9 @@
-# Project Clementine — Minimum Test Scenario
+# Project Clementine — AWS Test Scenario
 
 ## DVWA on EC2 with intentional AWS misconfigurations
 
 **Status:** Reference specification  
+**Companion:** For Azure infrastructure testing see [test-scenario-azure.md](test-scenario-azure.md)  
 **Purpose:** Validate that Project Clementine correctly identifies application-layer vulnerabilities, AWS infrastructure misconfigurations, and the compound attack chains that connect them — all in a fully controlled, legal environment.
 
 ---

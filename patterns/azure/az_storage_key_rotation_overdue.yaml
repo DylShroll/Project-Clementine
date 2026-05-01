@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Storage Account Access Key Not Rotated (>90 days)"
+  severity: LOW
+
+entry:
+  type: azure_finding
+  check: "azure:storage_key_rotation_overdue"
+
+pivot:
+  - type: azure_finding
+    check: "azure:storage_local_auth_not_disabled"
+    relationship: same_subscription
+
+impact: >
+  A storage account's access keys have not been rotated in more than 90 days and shared
+  access key authentication is not disabled. Access keys grant unrestricted access to all
+  storage services and data. Keys appearing in CI/CD logs, application config exports, or
+  diagnostic traces remain valid indefinitely until rotated. Disabling shared key auth
+  (enforcing Entra ID only) would eliminate this risk class entirely.
+
+remediation_priority:
+  - summary: "Disable shared key authentication on all storage accounts; use Entra ID RBAC only"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enable automated key rotation via Key Vault rotation policy if shared key auth is required"
+    effort: MEDIUM
+    breaks_chain: false

@@ -1,0 +1,31 @@
+pattern:
+  name: "Azure Storage Account-Scope SAS Token with Long Expiry (>7 days)"
+  severity: HIGH
+
+entry:
+  type: app_finding
+  category: "SAS_TOKEN"
+
+pivot:
+  - type: azure_finding
+    check: "azure:storage_account_sas_no_expiry_policy"
+    relationship: same_subscription
+
+impact: >
+  A long-lived SAS token scoped to the storage account (signed-resource=account) was
+  detected in application traffic or responses. Account-level SAS grants access to all
+  services (blob, file, queue, table), all resource types, and all permissions delegated
+  at signing time. Tokens with expiry >7 days or without a signed-expiry policy cannot be
+  revoked without rotating the storage account access key, causing service disruption.
+  If the token leaks via logs, git history, or response caching, all account data is at risk.
+
+remediation_priority:
+  - summary: "Replace account SAS with service-scope SAS or user-delegation SAS (Entra ID signed) with <24h expiry"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enable storage account SAS expiry policy enforcing maximum token lifetime"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Rotate storage account access keys; invalidate all existing SAS tokens"
+    effort: LOW
+    breaks_chain: false

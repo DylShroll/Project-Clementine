@@ -50,6 +50,33 @@ aws:
   account_id: "${AWS_ACCOUNT_ID}"   # 12-digit AWS account ID
 
 # ---------------------------------------------------------------------------
+# Azure (Clementine 2.0 "Mandarin") — set enabled: true to activate
+# ---------------------------------------------------------------------------
+azure:
+  enabled: false
+  tenants:
+    - tenant_id: "${AZURE_TENANT_ID}"
+      subscription_ids: []          # empty = all visible subscriptions
+      management_group_ids: []
+  compliance_frameworks:
+    - "cis_3.0_azure"
+    - "mcsb_azure"
+    - "nist_800_53_revision_5_azure"
+    - "iso27001_2013_azure"
+    - "soc2_azure"
+    - "prowler_threatscore_azure"
+  kql_queries_dir: "./queries/azure"
+  pim_activation_cost: 0.7          # path-score discount for PIM-eligible edges
+  expand_inherited_assignments: true
+  guardrails:
+    max_resources_per_type: 500
+    allow_imds_probe: false         # off by default — requires explicit engagement approval
+    allow_anonymous_blob_access_test: true
+    allow_kv_secret_metadata_read: true
+    allow_sas_token_extraction: true
+    allow_run_command_test: false   # never default — too disruptive
+
+# ---------------------------------------------------------------------------
 # Compliance frameworks
 # ---------------------------------------------------------------------------
 compliance:
@@ -171,4 +198,49 @@ mcp_servers:
   playwright:
     command: "npx"
     args: ["-y", "@playwright/mcp@latest"]
+    env: {}
+
+  # ---------------------------------------------------------------------------
+  # Azure MCP servers (Clementine 2.0 — only active when azure.enabled: true)
+  # ---------------------------------------------------------------------------
+
+  # Microsoft Azure MCP Server — official read-only Azure resource enumeration.
+  # Requires Node.js 20+. Auth: service principal env vars (see §6.3 of spec).
+  # All 40+ Azure service namespaces available; Clementine uses namespace mode
+  # with --read-only enforced server-side.
+  azure_mcp:
+    command: "npx"
+    args:
+      - "-y"
+      - "@azure/mcp@latest"
+      - "server"
+      - "start"
+      - "--read-only"
+    env:
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+      # For AKS workload identity deployments, set this instead of CLIENT_SECRET:
+      # AZURE_FEDERATED_TOKEN_FILE: "/var/run/secrets/azure/tokens/azure-identity-token"
+      # AZURE_MCP_INCLUDE_PRODUCTION_CREDENTIALS: "true"
+
+  # Prowler Lighthouse AI MCP Server — unified compliance scanning for AWS + Azure.
+  # Replaces the old AWS-only Prowler MCP. Runs Azure CIS 3.0, MCSB, NIST 800-53,
+  # ISO 27001, SOC 2, and Prowler ThreatScore checks (160+ Azure controls in v5.6+).
+  # install: pip install "prowler[azure]>=5.6"
+  prowler_mcp:
+    command: "python"
+    args: ["-m", "prowler.mcp_server"]
+    env:
+      AZURE_TENANT_ID: "${AZURE_TENANT_ID}"
+      AZURE_CLIENT_ID: "${AZURE_CLIENT_ID}"
+      AZURE_CLIENT_SECRET: "${AZURE_CLIENT_SECRET}"
+      AWS_PROFILE: "${AWS_AUDIT_PROFILE}"
+
+  # Microsoft Learn MCP — grounds LLM reasoning in canonical Azure documentation.
+  # Thin wrapper over learn.microsoft.com for the AI Triage phase; prevents
+  # hallucinated Azure API names and resolves resource-provider semantics.
+  microsoft_learn:
+    command: "python"
+    args: ["-m", "clementine.tools.microsoft_learn_mcp"]
     env: {}

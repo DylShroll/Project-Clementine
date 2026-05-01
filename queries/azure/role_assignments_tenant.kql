@@ -1,0 +1,9 @@
+authorizationresources
+| where type == "microsoft.authorization/roleassignments"
+| extend principalId   = tostring(properties.principalId)
+| extend principalType = tostring(properties.principalType)
+| extend roleDefId     = tostring(properties.roleDefinitionId)
+| extend scope         = tostring(properties.scope)
+| extend conditionExpr = tostring(properties.condition)
+| extend createdOn     = todatetime(properties.createdOn)
+| project id, principalId, principalType, roleDefId, scope, conditionExpr, createdOn

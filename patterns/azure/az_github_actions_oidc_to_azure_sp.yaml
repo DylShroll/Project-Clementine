@@ -1,0 +1,34 @@
+pattern:
+  name: "GitHub Actions OIDC Federated to Azure SP → Multi-Cloud Pivot"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:federated_credential_github_actions"
+
+pivot:
+  - type: azure_finding
+    check: "azure:github_actions_sp_has_privileged_rbac"
+    relationship:
+      via_edges:
+        - OIDC_TRUSTS
+        - HAS_RBAC_ROLE
+      max_hops: 4
+
+impact: >
+  A GitHub Actions OIDC federation is configured, allowing CI/CD workflows to obtain Azure
+  tokens without stored secrets. If the federated credential is too broadly scoped (wildcard
+  subject or permissive repository pattern) and the SP has privileged RBAC (Contributor/Owner),
+  a compromised GitHub repository — or any public fork — can obtain full Azure subscription
+  access via a malicious Actions workflow. This is a critical multi-cloud supply chain path.
+
+remediation_priority:
+  - summary: "Restrict federated credential subject to exact repo and branch (repo:org/repo:ref:refs/heads/main)"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Scope the SP RBAC to the minimum subscription resources required by the pipeline"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable branch protection and required reviewers on the repository that holds the federated workflow"
+    effort: MEDIUM
+    breaks_chain: false

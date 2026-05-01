@@ -1,0 +1,25 @@
+pattern:
+  name: "Azure Cosmos DB Public Network Access Enabled Without IP Firewall"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:cosmos_public_access_no_firewall"
+
+pivot:
+  - type: azure_finding
+    check: "azure:cosmos_no_private_endpoint"
+    relationship: same_resource_group
+
+impact: >
+  Cosmos DB account accessible from all networks without IP restriction allows
+  any internet host to reach the data plane. Combined with a leaked connection
+  string or access key, full database read/write is possible without VPN.
+
+remediation_priority:
+  - summary: "Set publicNetworkAccess=Disabled and use private endpoint"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Rotate Cosmos DB primary/secondary keys immediately"
+    effort: LOW
+    breaks_chain: false

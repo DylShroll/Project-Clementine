@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Subscription Owner Without MFA Enforcement"
+  severity: CRITICAL
+
+entry:
+  type: azure_finding
+  check: "azure:subscription_owner_no_mfa"
+
+pivot:
+  - type: azure_finding
+    check: "azure:ca_policy_gaps_for_admin_roles"
+    relationship: same_tenant
+
+impact: >
+  A principal with Owner role on a subscription has no MFA requirement enforced via
+  Conditional Access. A single password compromise grants full subscription control:
+  create/delete resources, read all secrets, modify networking, assign arbitrary roles.
+  Password spray, credential stuffing, and phishing attacks can achieve full subscription
+  takeover with no multi-factor barrier.
+
+remediation_priority:
+  - summary: "Create a Conditional Access policy requiring phishing-resistant MFA for all principals assigned Contributor or above on any subscription"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Convert subscription Owner assignments to PIM-eligible with approval workflow"
+    effort: MEDIUM
+    breaks_chain: false

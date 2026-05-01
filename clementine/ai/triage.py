@@ -34,9 +34,13 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from pathlib import Path
+
 from ..config import AIConfig
 from ..db import Finding, FindingsDB
-from .client import ClaudeClient
+from .client import ClaudeClient, build_azure_alias_map, apply_azure_aliases
+
+_AZURE_PROMPT_PATH = Path(__file__).parent.parent.parent / "prompts" / "azure" / "phase4.md"
 
 log = logging.getLogger(__name__)
 
@@ -200,15 +204,29 @@ def _chunk(items: list[Finding], size: int) -> list[list[Finding]]:
     return [items[i : i + size] for i in range(0, len(items), size)]
 
 
+def _load_azure_triage_prompt() -> str:
+    """Load the Azure-specific triage guidance section (phase4.md), or empty string."""
+    try:
+        return _AZURE_PROMPT_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
 async def _triage_batch(
     batch: list[Finding],
     *,
     client: ClaudeClient,
 ) -> TriageBatchResult:
-    """Send one batch of findings to Claude and parse the verdicts."""
-    # System prompt is sent with cache_control so repeated batches hit the
-    # prompt cache. The user-content payload changes per batch.
-    system_blocks = [
+    """Send one batch of findings to Claude and parse the verdicts.
+
+    When the batch contains Azure findings (provider='azure'), the Azure-specific
+    triage guidance from prompts/azure/phase4.md is appended to the system prompt
+    and resource IDs are compressed using the Azure alias map. Both blocks share
+    the same cache_control breakpoint so cache hits still occur on identical batches.
+    """
+    has_azure = any(getattr(f, "provider", "aws") == "azure" for f in batch)
+
+    system_blocks: list[dict] = [
         {
             "type": "text",
             "text": _SYSTEM_PROMPT,
@@ -216,7 +234,26 @@ async def _triage_batch(
         }
     ]
 
-    user_text = _render_batch_prompt(batch)
+    if has_azure:
+        azure_section = _load_azure_triage_prompt()
+        if azure_section:
+            system_blocks.append({
+                "type": "text",
+                "text": azure_section,
+                "cache_control": {"type": "ephemeral"},
+            })
+
+    # Build alias map for any Azure resource IDs in this batch
+    alias_map: dict[str, str] = {}
+    if has_azure:
+        azure_rids = [
+            f.resource_id or getattr(f, "azure_resource_id", None) or ""
+            for f in batch
+            if getattr(f, "provider", "aws") == "azure"
+        ]
+        alias_map = build_azure_alias_map([r for r in azure_rids if r])
+
+    user_text = _render_batch_prompt(batch, alias_map=alias_map)
 
     return await client.parse(
         response_model=TriageBatchResult,
@@ -227,8 +264,21 @@ async def _triage_batch(
     )
 
 
-def _render_batch_prompt(batch: list[Finding]) -> str:
-    """Render a batch of findings into a compact prompt block."""
+def _render_batch_prompt(
+    batch: list[Finding],
+    alias_map: dict[str, str] | None = None,
+) -> str:
+    """Render a batch of findings into a compact prompt block.
+
+    When *alias_map* is provided (Azure batches), Azure resource IDs embedded
+    in description/evidence are compressed to short aliases before serialisation.
+    An alias legend is appended at the end of the block behind a cache breakpoint.
+    """
+    alias_map = alias_map or {}
+
+    def _alias(text: str) -> str:
+        return apply_azure_aliases(text, alias_map) if alias_map else text
+
     lines = [
         f"Triage the following {len(batch)} finding(s). Return one verdict per "
         f"finding, referencing its ID verbatim.",
@@ -238,28 +288,39 @@ def _render_batch_prompt(batch: list[Finding]) -> str:
         lines.append(f"--- Finding {idx} of {len(batch)} ---")
         lines.append(f"finding_id: {f.id}")
         lines.append(f"source: {f.source}")
+        lines.append(f"provider: {getattr(f, 'provider', 'aws')}")
         lines.append(f"severity: {f.severity.value}")
         lines.append(f"category: {f.category}")
-        lines.append(f"title: {f.title}")
-        lines.append(f"description: {f.description}")
+        lines.append(f"title: {_alias(f.title or '')}")
+        lines.append(f"description: {_alias(f.description or '')}")
         if f.resource_type or f.resource_id:
             lines.append(
-                f"resource: {f.resource_type or '?'} / {f.resource_id or '?'}"
+                f"resource: {f.resource_type or '?'} / {_alias(f.resource_id or '?')}"
             )
         if f.aws_account_id or f.aws_region:
             lines.append(
                 f"aws: account={f.aws_account_id or '-'} region={f.aws_region or '-'}"
             )
+        # Azure-specific context fields
+        az_sub = getattr(f, "subscription_id", None)
+        az_rg = getattr(f, "resource_group", None)
+        if az_sub or az_rg:
+            lines.append(f"azure: subscription={az_sub or '-'} rg={az_rg or '-'}")
         if f.evidence_type:
             lines.append(f"evidence_type: {f.evidence_type}")
         if f.evidence_data:
-            # evidence_data has already been scrubbed by sanitize_evidence
-            # before it was stored, so passing it through is safe.
             lines.append("evidence_data:")
-            lines.append(_truncate(str(f.evidence_data), limit=4000))
+            lines.append(_truncate(_alias(str(f.evidence_data)), limit=4000))
         if f.remediation_summary:
             lines.append(f"remediation_summary: {f.remediation_summary}")
         lines.append("")
+
+    # Alias legend so the model can decode compressed IDs in its rationale
+    if alias_map:
+        lines.append("--- Azure Resource ID Alias Map ---")
+        for rid, alias in alias_map.items():
+            lines.append(f"  {alias} = {rid}")
+
     return "\n".join(lines)
 
 

@@ -1,0 +1,12 @@
+authorizationresources
+| where type == "microsoft.authorization/roledefinitions"
+| extend roleName = tostring(properties.roleName)
+| extend rType    = tostring(properties.type)
+| extend perms    = properties.permissions
+| mv-expand perms
+| project id, roleName, rType,
+          actions        = perms.actions,
+          notActions     = perms.notActions,
+          dataActions    = perms.dataActions,
+          notDataActions = perms.notDataActions,
+          assignableScopes = properties.assignableScopes

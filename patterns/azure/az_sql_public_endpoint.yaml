@@ -1,0 +1,25 @@
+pattern:
+  name: "Azure SQL Server Public Endpoint Without Firewall Restriction"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:sql_public_access_enabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:sql_no_private_endpoint"
+    relationship: same_resource_group
+
+impact: >
+  Azure SQL Server allows connections from all networks (0.0.0.0/0 firewall rule or
+  no rules). Combined with weak credentials or a credential leak, this exposes the
+  database to internet-based brute force and SQL injection from any source IP.
+
+remediation_priority:
+  - summary: "Disable public endpoint and configure private endpoint with DNS integration"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Rotate SQL admin credentials and enforce Entra ID authentication only"
+    effort: LOW
+    breaks_chain: false

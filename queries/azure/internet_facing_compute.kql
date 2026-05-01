@@ -1,0 +1,14 @@
+Resources
+| where type contains "publicIPAddresses" and isnotempty(properties.ipAddress)
+| project pipId = id, ip = tostring(properties.ipAddress),
+          attached = tostring(properties.ipConfiguration.id)
+| join kind=leftouter (
+    Resources
+    | where type =~ "microsoft.network/networkinterfaces"
+    | mv-expand ipconf = properties.ipConfigurations
+    | extend nicId  = id,
+             vmId   = tostring(properties.virtualMachine.id),
+             pipRef = tostring(ipconf.properties.publicIPAddress.id)
+    | project nicId, vmId, pipRef
+) on $left.pipId == $right.pipRef
+| project pipId, ip, vmId, nicId

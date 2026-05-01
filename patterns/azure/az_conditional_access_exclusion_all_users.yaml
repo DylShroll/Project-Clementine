@@ -1,0 +1,28 @@
+pattern:
+  name: "Azure Conditional Access Policy Excludes All Users via Group"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:conditional_access_universal_exclusion"
+
+pivot:
+  - type: azure_finding
+    check: "azure:exclusion_group_has_privileged_members"
+    relationship: same_tenant
+
+impact: >
+  A Conditional Access policy that should protect all users contains an exclusion group
+  whose membership includes privileged accounts (Global Admins, Application Admins, or
+  other critical roles). Adding any account to the exclusion group silently bypasses MFA,
+  Compliant Device, and location requirements for the entire policy. An attacker who can
+  add accounts to the group (via Group Owner permissions or Application Admin) can create
+  a persistent Conditional Access bypass for any account they control.
+
+remediation_priority:
+  - summary: "Remove privileged accounts from Conditional Access exclusion groups; use named emergency-access accounts only"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Alert on Conditional Access exclusion group membership changes via Entra ID audit logs"
+    effort: LOW
+    breaks_chain: false

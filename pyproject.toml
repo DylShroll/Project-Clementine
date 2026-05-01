@@ -29,6 +29,20 @@ dependencies = [
     "boto3>=1.34",
     # Anthropic SDK with Bedrock transport — powers AI triage and novel-chain discovery
     "anthropic[bedrock]>=0.43.0",
+    # Azure SDKs — required for Phase 2b Azure audit and cloud-audit Azure module
+    "azure-identity>=1.17",
+    "azure-mgmt-resource>=23.0",
+    "azure-mgmt-authorization>=4.0",
+    "azure-mgmt-resourcegraph>=8.0",
+    "azure-mgmt-network>=25.0",
+    "azure-mgmt-compute>=31.0",
+    "azure-mgmt-keyvault>=10.0",
+    "azure-mgmt-storage>=21.0",
+    "azure-mgmt-containerservice>=30.0",
+    "azure-mgmt-msi>=7.0",
+    "azure-mgmt-web>=7.0",
+    "azure-mgmt-monitor>=6.0",
+    "msgraph-sdk>=1.0",
 ]
 
 [project.scripts]

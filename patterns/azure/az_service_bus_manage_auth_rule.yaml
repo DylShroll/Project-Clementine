@@ -1,0 +1,26 @@
+pattern:
+  name: "Azure Service Bus Namespace-Level Manage Auth Rule"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:service_bus_manage_rule_enabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:service_bus_local_auth_not_disabled"
+    relationship: same_resource_group
+
+impact: >
+  A Service Bus namespace has a shared-access policy with Manage rights at the namespace
+  level. Manage grants full control over all queues and topics: create/delete, send/receive
+  on all entities, and enumerate the connection string. A leaked namespace-level Manage
+  key gives an attacker complete control over all message flows in the namespace.
+
+remediation_priority:
+  - summary: "Delete namespace-level Manage auth rules; use Entra ID RBAC (Azure Service Bus Data Owner) for administrative tasks"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Use entity-level (queue/topic) policies with minimum rights (Send or Receive only)"
+    effort: MEDIUM
+    breaks_chain: false

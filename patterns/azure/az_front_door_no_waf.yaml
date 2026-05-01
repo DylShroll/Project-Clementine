@@ -1,0 +1,25 @@
+pattern:
+  name: "Azure Front Door Without WAF Policy Attached"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:front_door_no_waf"
+
+pivot:
+  - type: app_finding
+    category: XSS
+    relationship: same_subscription
+
+impact: >
+  An Azure Front Door CDN profile has no WAF policy associated. All HTTP/HTTPS traffic
+  reaching origins via Front Door is unfiltered at the CDN layer. Application-layer
+  attacks bypass the global entry point without any rule evaluation or blocking.
+
+remediation_priority:
+  - summary: "Associate a WAF policy in Prevention mode with the Front Door profile for all routing rules"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Configure custom WAF rules to block known attacker IP ranges and anomalous bot patterns"
+    effort: MEDIUM
+    breaks_chain: false

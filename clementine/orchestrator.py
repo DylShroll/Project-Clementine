@@ -35,6 +35,9 @@ class AssessmentState(str, Enum):
     RECON_COMPLETE = "RECON_COMPLETE"
     AWS_AUDIT_RUNNING = "AWS_AUDIT_RUNNING"
     AWS_AUDIT_COMPLETE = "AWS_AUDIT_COMPLETE"
+    # Phase 2b — Azure cloud audit (runs after AWS audit; skipped when azure.enabled=false)
+    AZURE_AUDIT_RUNNING = "AZURE_AUDIT_RUNNING"
+    AZURE_AUDIT_COMPLETE = "AZURE_AUDIT_COMPLETE"
     APP_TEST_RUNNING = "APP_TEST_RUNNING"
     APP_TEST_COMPLETE = "APP_TEST_COMPLETE"
     # Phase 3.5 — LLM finding triage (optional, skipped when AI disabled)
@@ -141,9 +144,18 @@ class Orchestrator:
         from .phases.correlate import run_correlation
         from .phases.report import run_reporting
 
+        async def _azure_audit_phase(**kw) -> None:
+            """Phase 2b wrapper — no-op when Azure is disabled."""
+            if not self._cfg.azure.enabled:
+                log.info("Azure audit skipped (azure.enabled = false)")
+                return
+            from .phases.azure_audit import run_azure_audit
+            await run_azure_audit(**kw)
+
         phases = [
             (AssessmentState.RECON_RUNNING, AssessmentState.RECON_COMPLETE, run_recon),
             (AssessmentState.AWS_AUDIT_RUNNING, AssessmentState.AWS_AUDIT_COMPLETE, run_aws_audit),
+            (AssessmentState.AZURE_AUDIT_RUNNING, AssessmentState.AZURE_AUDIT_COMPLETE, _azure_audit_phase),
             (AssessmentState.APP_TEST_RUNNING, AssessmentState.APP_TEST_COMPLETE, run_app_test),
             (AssessmentState.AI_TRIAGE_RUNNING, AssessmentState.AI_TRIAGE_COMPLETE, run_ai_triage),
             (AssessmentState.CORRELATION_RUNNING, AssessmentState.CORRELATION_COMPLETE, run_correlation),
@@ -186,12 +198,16 @@ class Orchestrator:
 
         mcp_cfg = self._cfg.mcp_servers
         servers = [
-            ("autopentest",  mcp_cfg.autopentest),
-            ("cloud_audit",  mcp_cfg.cloud_audit),
-            ("prowler",      mcp_cfg.prowler),
-            ("aws_knowledge", mcp_cfg.aws_knowledge),
-            ("aws_docs",     mcp_cfg.aws_docs),
-            ("playwright",   mcp_cfg.playwright),
+            ("autopentest",    mcp_cfg.autopentest),
+            ("cloud_audit",    mcp_cfg.cloud_audit),
+            ("prowler",        mcp_cfg.prowler),
+            ("aws_knowledge",  mcp_cfg.aws_knowledge),
+            ("aws_docs",       mcp_cfg.aws_docs),
+            ("playwright",     mcp_cfg.playwright),
+            # Azure servers (Clementine 2.0)
+            ("azure_mcp",      mcp_cfg.azure_mcp),
+            ("prowler_mcp",    mcp_cfg.prowler_mcp),
+            ("microsoft_learn", mcp_cfg.microsoft_learn),
         ]
         for name, cfg in servers:
             if cfg is None:
@@ -224,6 +240,8 @@ class Orchestrator:
         AssessmentState.RECON_COMPLETE,
         AssessmentState.AWS_AUDIT_RUNNING,
         AssessmentState.AWS_AUDIT_COMPLETE,
+        AssessmentState.AZURE_AUDIT_RUNNING,
+        AssessmentState.AZURE_AUDIT_COMPLETE,
         AssessmentState.APP_TEST_RUNNING,
         AssessmentState.APP_TEST_COMPLETE,
         AssessmentState.AI_TRIAGE_RUNNING,

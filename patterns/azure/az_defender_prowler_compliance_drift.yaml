@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Defender for Cloud vs Prowler Compliance Control Verdict Drift"
+  severity: MEDIUM
+
+entry:
+  type: azure_finding
+  check: "azure:compliance_drift_detected"
+
+pivot:
+  - type: azure_finding
+    check: "azure:control_passed_in_one_tool_failed_in_another"
+    relationship: same_subscription
+
+impact: >
+  The same CIS/NIST/MCSB compliance control is reported as Passed by Microsoft Defender for
+  Cloud but Failed by Prowler (or vice versa). This discrepancy indicates a gap in control
+  evaluation logic, a stale compliance assessment, or an exception applied in one scanner
+  that masks the true configuration state. Controls showing as Passed should not be excluded
+  from remediation without manual verification of the underlying configuration.
+
+remediation_priority:
+  - summary: "Manually verify the underlying resource configuration for each drifting control and adjudicate the correct verdict"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Document the resolution in the compliance exception register; track until resolved in both tools"
+    effort: LOW
+    breaks_chain: false

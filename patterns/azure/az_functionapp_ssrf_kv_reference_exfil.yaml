@@ -1,0 +1,46 @@
+pattern:
+  name: "Azure Function App SSRF → IDENTITY_ENDPOINT → Key Vault Reference Secret Exfiltration"
+  severity: CRITICAL
+
+entry:
+  type: app_finding
+  category: SSRF
+
+pivot:
+  - type: azure_finding
+    check: "azure:app_service_has_system_mi"
+    relationship:
+      via_edges:
+        - SSRF_REACHABLE
+        - IMDS_EXPOSED
+        - CAN_ASSUME_MI
+      max_hops: 4
+
+  - type: azure_finding
+    check: "azure:kv_secret_referenced_by_app_service"
+    relationship:
+      via_edges:
+        - CAN_ASSUME_MI
+        - HAS_RBAC_ROLE
+        - STORES_SECRET_FOR
+      max_hops: 5
+
+impact: >
+  An SSRF vulnerability in an Azure Function App or App Service allows the attacker to reach
+  the App Service managed identity token endpoint at the URL stored in the IDENTITY_ENDPOINT
+  environment variable. Unlike a VM, the App Service sandbox does NOT expose 169.254.169.254,
+  so the token endpoint is only reachable via the internal SSRF vector to ${IDENTITY_ENDPOINT}.
+  With a valid MI token, the attacker calls Key Vault to read all secrets referenced by the app
+  via @Microsoft.KeyVault(...) syntax, typically including database connection strings, API keys,
+  and third-party service credentials.
+
+remediation_priority:
+  - summary: "Fix SSRF: validate and allowlist all outbound URL targets; reject internal Azure link-local ranges"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Use private Key Vault endpoints and restrict network access to the Function App outbound IPs only"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Scope the system-assigned MI to Key Vault Secret User on individual secrets, not the entire vault"
+    effort: MEDIUM
+    breaks_chain: false

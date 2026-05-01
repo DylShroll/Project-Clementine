@@ -1,0 +1,27 @@
+pattern:
+  name: "Azure Entra ID Privileged Directory Role Permanently Assigned (No PIM)"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:directory_role_permanent_assignment"
+
+pivot:
+  - type: azure_finding
+    check: "azure:privileged_role_no_access_review"
+    relationship: same_tenant
+
+impact: >
+  A privileged Entra ID directory role (Global Admin, Privileged Role Admin, Application
+  Admin, or User Admin) is permanently active rather than PIM-eligible. Permanent role
+  assignments mean the account is always privileged — a single credential compromise
+  grants full tenant control without any PIM activation barrier. Stale permanent
+  assignments accumulate over time as employees change responsibilities.
+
+remediation_priority:
+  - summary: "Convert all permanent privileged role assignments to PIM-eligible with approval workflow"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enable quarterly access reviews for all PIM-eligible role assignments"
+    effort: LOW
+    breaks_chain: false

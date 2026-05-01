@@ -1,0 +1,28 @@
+pattern:
+  name: "Azure Service Principal with MS Graph Application Permission → Entra ID Read/Write"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:sp_has_sensitive_graph_app_role"
+
+pivot:
+  - type: azure_finding
+    check: "azure:sp_can_be_impersonated_via_client_secret"
+    relationship: same_tenant
+
+impact: >
+  A service principal has been granted Microsoft Graph application permissions
+  (Directory.ReadWrite.All, User.ReadWrite.All, or Application.ReadWrite.All) without
+  admin consent review or rotation cycle. App permissions are not restricted by user
+  context — the SP can read all users, reset passwords, add credentials to other SPs,
+  and read all group memberships without any user interaction. This is a persistent
+  backdoor for tenant enumeration and lateral movement.
+
+remediation_priority:
+  - summary: "Replace broad Directory.ReadWrite.All with scoped permissions (e.g. User.Read.All + specific write permissions)"
+    effort: MEDIUM
+    breaks_chain: true
+  - summary: "Enable admin consent workflow requiring Security Admin approval for new Graph application permission grants"
+    effort: MEDIUM
+    breaks_chain: false

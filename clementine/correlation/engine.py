@@ -179,7 +179,7 @@ class CorrelationEngine:
             log.warning("Patterns directory not found: %s", self._patterns_dir)
             return
 
-        for yaml_file in sorted(self._patterns_dir.glob("*.yaml")):
+        for yaml_file in sorted(self._patterns_dir.rglob("*.yaml")):
             try:
                 with yaml_file.open() as fh:
                     data = yaml.safe_load(fh)
@@ -243,6 +243,8 @@ class CorrelationEngine:
         # Source filter
         if cond.type == "app_finding" and finding.source not in ("autopentest",):
             return False
+        if cond.type == "azure_finding" and getattr(finding, "provider", "aws") != "azure":
+            return False
         if cond.type == "infra_finding" and finding.source not in ("cloud-audit", "prowler"):
             return False
 
@@ -294,6 +296,8 @@ class CorrelationEngine:
 
             # Source type filter
             if pivot.type == "app_finding" and f.source not in ("autopentest",):
+                continue
+            if pivot.type == "azure_finding" and getattr(f, "provider", "aws") != "azure":
                 continue
             if pivot.type == "infra_finding" and f.source not in ("cloud-audit", "prowler"):
                 continue
@@ -352,9 +356,15 @@ class CorrelationEngine:
             )
 
         relationship = pivot.relationship
-        # Same-account: all findings in the store share an account if account IDs match
-        if relationship == "same_account":
+        # Same-account / same-tenant: all findings in the store share a tenant/account
+        if relationship in ("same_account", "same_tenant"):
             return True  # If we're here, all findings are from the same assessment
+
+        # Azure subscription / resource group scope shortcuts
+        if relationship == "same_subscription":
+            return _same_subscription_heuristic(src_id, dst_id)
+        if relationship == "same_resource_group":
+            return _same_resource_group_heuristic(src_id, dst_id)
 
         # Same-compute-resource: the resource IDs reference the same EC2/compute
         if relationship == "same_compute_resource":
@@ -495,3 +505,34 @@ def _same_compute_heuristic(arn1: str, arn2: str) -> bool:
         if part.startswith("i-") and part in arn2:
             return True
     return False
+
+
+def _same_subscription_heuristic(rid1: str, rid2: str) -> bool:
+    """True when both Azure resource IDs share the same subscription segment."""
+    # /subscriptions/<sub-id>/...
+    def _sub(rid: str) -> str:
+        parts = rid.lower().split("/subscriptions/")
+        if len(parts) < 2:
+            return ""
+        return parts[1].split("/")[0]
+
+    s1, s2 = _sub(rid1), _sub(rid2)
+    return bool(s1) and s1 == s2
+
+
+def _same_resource_group_heuristic(rid1: str, rid2: str) -> bool:
+    """True when both Azure resource IDs share the same subscription AND resource group."""
+    # /subscriptions/<sub>/resourceGroups/<rg>/...
+    def _rg_key(rid: str) -> str:
+        lower = rid.lower()
+        try:
+            after_sub = lower.split("/subscriptions/")[1]
+            sub = after_sub.split("/")[0]
+            after_rg = lower.split("/resourcegroups/")[1]
+            rg = after_rg.split("/")[0]
+            return f"{sub}/{rg}"
+        except (IndexError, AttributeError):
+            return ""
+
+    k1, k2 = _rg_key(rid1), _rg_key(rid2)
+    return bool(k1) and k1 == k2

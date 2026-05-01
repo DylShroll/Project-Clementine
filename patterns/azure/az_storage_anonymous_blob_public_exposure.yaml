@@ -1,0 +1,29 @@
+pattern:
+  name: "Azure Blob Container Anonymous Public Access"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:storage_public_access_enabled"
+
+pivot:
+  - type: azure_finding
+    check: "azure:blob_container_public_read"
+    relationship: same_resource_group
+
+impact: >
+  A storage account with allowBlobPublicAccess=true contains one or more blob containers
+  configured for anonymous public read access. Any internet user can enumerate and download
+  all blobs without authentication. Common data exposures include database backups, application
+  logs, configuration files, secrets, and SAS token strings embedded in blob content.
+
+remediation_priority:
+  - summary: "Set allowBlobPublicAccess=false on all storage accounts"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Audit all blob containers for PublicAccessLevel != Off and rotate any exposed credentials found in blobs"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Enable Defender for Storage anomalous blob access alerts"
+    effort: LOW
+    breaks_chain: false

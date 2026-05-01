@@ -1,0 +1,33 @@
+pattern:
+  name: "Azure NSG Allow * → Management Ports (SSH/RDP/DB) from Internet"
+  severity: HIGH
+
+entry:
+  type: azure_finding
+  check: "azure:nsg_inbound_internet_mgmt"
+
+pivot:
+  - type: azure_finding
+    check: "azure:vm_attached_to_exposed_subnet"
+    relationship:
+      via_edges:
+        - INTERNET_FACING
+      max_hops: 3
+
+impact: >
+  A Network Security Group allows inbound traffic from any source (0.0.0.0/0 or Internet)
+  to SSH (22), RDP (3389), or database ports (3306/5432/1433/6379/27017/9200) on VMs in
+  the associated subnet. This exposes the compute layer to internet-based brute force,
+  credential stuffing, and exploitation of unpatched services. Database ports directly
+  exposed to the internet are frequently exploited within hours of exposure.
+
+remediation_priority:
+  - summary: "Remove wildcard inbound rules; restrict management access to named IP ranges or Azure Bastion"
+    effort: LOW
+    breaks_chain: true
+  - summary: "Enable JIT VM access for SSH/RDP (locks down these ports except when explicitly requested)"
+    effort: LOW
+    breaks_chain: false
+  - summary: "Move database VMs to subnets with no internet route; use private endpoints for application-tier access"
+    effort: HIGH
+    breaks_chain: false
