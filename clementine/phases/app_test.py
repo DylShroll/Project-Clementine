@@ -126,6 +126,12 @@ Constraints:
   - Honour the rate limit; never exceed {rate} req/s.
   - Stay inside the registered scope; never touch excluded paths.
   - Use `docker exec autopentest-tools curl` for HTTP requests.
+  - Authentication: re-read `authentication.credentials.bearer_token` from
+    get_engagement_config("{eid}") and attach `-H "Authorization: Bearer
+    <token>"` on EVERY in-scope HTTP request — including parallel Analyzer
+    subagents, Exploiter probes, and any tool invoked via docker exec.
+    Tests that require unauthenticated state (e.g. ATHN-001 login boundary)
+    are an explicit, documented exception; everything else MUST be authed.
   - Log every finding with log_finding() immediately when discovered.
   - Do NOT call generate_report() — Clementine handles reporting.
 

@@ -287,11 +287,12 @@ class GraphBuilder:
         # Seed AWS resource nodes from all findings
         await self._seed_nodes_from_findings()
 
-        # MCP enrichment (optional)
-        if mcp.is_available("cloud_audit"):
-            await self._enrich_from_cloud_audit(mcp, limiter)
-        else:
-            log.debug("[Graph] cloud_audit unavailable — skipping MCP enrichment")
+        # AWS IAM enrichment via the awslabs IAM MCP server (read-only).
+        # iam_enrichment.enrich_iam guards on iam server availability and writes
+        # an `unavailable` status when the server isn't registered, so the
+        # caller doesn't need a second gate here.
+        from .iam_enrichment import enrich_iam
+        await enrich_iam(self, db=self._db, mcp=mcp, limiter=limiter)
 
         # Azure enrichment — runs only when Azure nodes exist in the DB.
         # Importing here avoids a circular import at module load time.
@@ -343,20 +344,3 @@ class GraphBuilder:
                 properties={"finding_ids": [f.id]},
             ))
 
-    async def _enrich_from_cloud_audit(
-        self,
-        mcp: "MCPRegistry",
-        limiter: "RateLimiter",
-    ) -> None:
-        """Run live IAM enumeration via the cloud_audit MCP server.
-
-        Replaces the previous stub. The IAM pass populates CAN_ASSUME,
-        OIDC_TRUSTS, HAS_PERMISSION, and CAN_PASS_ROLE edges directly into
-        ``graph_edges`` (with provenance) and into the in-memory NetworkX
-        graph. Failures in any sub-pass are recorded in
-        ``enrichment_status`` so report consumers can disclose the
-        completeness of the topology rather than silently ship a partial
-        graph.
-        """
-        from .iam_enrichment import enrich_iam
-        await enrich_iam(self, db=self._db, mcp=mcp, limiter=limiter)

@@ -502,8 +502,8 @@ orchestrator:
 ai:
   enabled: true
   aws_region: "us-east-1"
-  primary_model: "us.anthropic.claude-sonnet-4-6-20251101"
-  critical_model: "us.anthropic.claude-opus-4-7-20251101"
+  primary_model: "us.anthropic.claude-haiku-4-5-20251001"
+  critical_model: "us.anthropic.claude-sonnet-4-6-20251101"
   effort: "high"
   max_parallel_requests: 4
   max_retries: 3

@@ -182,6 +182,12 @@ Constraints:
   - Honour the rate limit; never exceed {rate} req/s across all tools.
   - Stay inside the registered scope; never touch excluded paths.
   - Use `docker exec autopentest-tools curl` for all HTTP requests.
+  - Authentication: read `authentication.credentials.bearer_token` from
+    get_engagement_config("{eid}") and attach it as
+    `-H "Authorization: Bearer <token>"` on EVERY in-scope HTTP request,
+    including the initial Phase 0 pre-flight checks and the crawl. Treat
+    unauthenticated probes as a separate test class — do not let auth
+    accidentally drop on tools you spawn via docker exec.
   - Never call generate_report() — that is Clementine's responsibility.
 
 Proceed now.

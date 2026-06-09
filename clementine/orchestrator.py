@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from .aws_creds import resolve_aws_env, verify_aws_credentials
 from .config import ClementineConfig
 from .db import FindingsDB
 from .mcp_client import MCPRegistry
@@ -31,6 +33,10 @@ log = logging.getLogger(__name__)
 
 class AssessmentState(str, Enum):
     INITIALIZED = "INITIALIZED"
+    # Phase 0 — Infrastructure-as-Code scanning (Workstream B "Pith"). Runs
+    # before recon; skipped when iac.enabled=false or iac.sources is empty.
+    IAC_SCAN_RUNNING = "IAC_SCAN_RUNNING"
+    IAC_SCAN_COMPLETE = "IAC_SCAN_COMPLETE"
     RECON_RUNNING = "RECON_RUNNING"
     RECON_COMPLETE = "RECON_COMPLETE"
     AWS_AUDIT_RUNNING = "AWS_AUDIT_RUNNING"
@@ -92,7 +98,7 @@ class Orchestrator:
             async with self._mcp:
                 await self._setup_mcp_servers()
                 await self._run_phases()
-            await self._print_ai_usage_summary()
+                await self._print_ai_usage_summary()
         except Exception as exc:
             import anyio
             # Shield the FAILED-state write from anyio's teardown cancellation
@@ -152,7 +158,21 @@ class Orchestrator:
             from .phases.azure_audit import run_azure_audit
             await run_azure_audit(**kw)
 
+        async def _iac_scan_phase(**kw) -> None:
+            """Phase 0 wrapper — no-op when no IaC sources are configured.
+
+            Importing the IaC scanner package lazily means a vanilla
+            AWS-only / Azure-only run never pays the cost of loading
+            scanner-wrapper modules.
+            """
+            if not self._cfg.iac.enabled or not self._cfg.iac.sources:
+                log.info("IaC scan skipped (iac.enabled=false or no sources)")
+                return
+            from .phases.iac_scan import run_iac_scan
+            await run_iac_scan(**kw)
+
         phases = [
+            (AssessmentState.IAC_SCAN_RUNNING, AssessmentState.IAC_SCAN_COMPLETE, _iac_scan_phase),
             (AssessmentState.RECON_RUNNING, AssessmentState.RECON_COMPLETE, run_recon),
             (AssessmentState.AWS_AUDIT_RUNNING, AssessmentState.AWS_AUDIT_COMPLETE, run_aws_audit),
             (AssessmentState.AZURE_AUDIT_RUNNING, AssessmentState.AZURE_AUDIT_COMPLETE, _azure_audit_phase),
@@ -192,14 +212,53 @@ class Orchestrator:
     # MCP server setup
     # ------------------------------------------------------------------
 
+    def _bootstrap_aws_credentials(self) -> None:
+        """Resolve AWS credentials once and propagate them to child processes.
+
+        Stdio MCP servers (cloud_audit, iam) inherit os.environ when started by
+        MCPRegistry, and the Prowler subprocess pulls from os.environ too, so
+        injecting resolved creds here gives every consumer a single, valid
+        credential surface regardless of how the user authenticates (proper
+        SSO profile, env vars already set, or aws-cli-login's custom cache).
+
+        Verification runs sts:GetCallerIdentity so an expired session token is
+        surfaced *now* — at orchestrator startup, in the foreground log —
+        rather than as an opaque NoCredentialsError several minutes into a
+        scan when Prowler or cloud_audit gives up.
+        """
+        aws_env = resolve_aws_env(self._cfg.aws.profile)
+        if not aws_env:
+            log.warning(
+                "Skipping AWS credential pre-flight: MCP servers and Prowler "
+                "will rely on whatever credential chain they can find on their "
+                "own. Expect Phase 2 to produce 0 findings if that chain is "
+                "also empty."
+            )
+            return
+
+        region = self._cfg.aws.regions[0] if self._cfg.aws.regions else "us-east-1"
+        if verify_aws_credentials(aws_env, region=region) is None:
+            # Don't propagate dead credentials — better to let the per-phase
+            # paths log "no creds" cleanly than to spread expired tokens.
+            return
+
+        for k, v in aws_env.items():
+            os.environ[k] = v
+        # AWS_PROFILE in os.environ would override our env-var creds in boto3's
+        # standard chain on some setups; drop it so the resolved creds win.
+        os.environ.pop("AWS_PROFILE", None)
+
     async def _setup_mcp_servers(self) -> None:
         """Register all configured MCP servers and run an initial health check."""
         from .config import HttpServerConfig
+
+        self._bootstrap_aws_credentials()
 
         mcp_cfg = self._cfg.mcp_servers
         servers = [
             ("autopentest",    mcp_cfg.autopentest),
             ("cloud_audit",    mcp_cfg.cloud_audit),
+            ("iam",            mcp_cfg.iam),
             ("prowler",        mcp_cfg.prowler),
             ("aws_knowledge",  mcp_cfg.aws_knowledge),
             ("aws_docs",       mcp_cfg.aws_docs),
@@ -236,6 +295,8 @@ class Orchestrator:
 
     _STATE_ORDER = [
         AssessmentState.INITIALIZED,
+        AssessmentState.IAC_SCAN_RUNNING,
+        AssessmentState.IAC_SCAN_COMPLETE,
         AssessmentState.RECON_RUNNING,
         AssessmentState.RECON_COMPLETE,
         AssessmentState.AWS_AUDIT_RUNNING,

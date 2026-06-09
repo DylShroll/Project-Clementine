@@ -77,6 +77,60 @@ azure:
     allow_run_command_test: false   # never default — too disruptive
 
 # ---------------------------------------------------------------------------
+# Phase 0 — Infrastructure-as-Code analysis (Workstream B "Pith")
+# ---------------------------------------------------------------------------
+# Phase 0 runs IaC scanners (tfsec, checkov, cfn-nag, gitleaks, trufflehog)
+# against Terraform / CloudFormation source trees BEFORE the orchestrator
+# touches the network. Findings flow into the same DB as runtime findings,
+# so a single report covers both planned-but-not-yet-deployed and live
+# posture.
+#
+# Disabled by default. To enable, flip `enabled: true` and add at least
+# one entry under `sources`. With no sources configured the phase is a
+# hard no-op and adds no overhead.
+iac:
+  enabled: false
+  # Each entry under `sources` is one IaC source root. Examples (commented
+  # out by default — uncomment after flipping `enabled: true`):
+  #   - type: dir
+  #     path: ./infra
+  #   - type: plan                         # M2+
+  #     path: ./tfplan.json
+  #     plan_format: json
+  #   - type: terraform_remote_state       # M4
+  #     backend: s3
+  #     bucket: my-tf-state
+  #     key: prod/terraform.tfstate
+  sources: []
+  scanners:
+    # Each scanner toggles independently. Disabled scanners are silently
+    # skipped at scan time. `extra_args` is forwarded verbatim to the
+    # underlying subprocess so users can flip rule packs or thresholds
+    # without forking the wrapper.
+    tfsec:
+      enabled: true
+      extra_args: []
+    checkov:
+      enabled: true     # land in B.M2
+      extra_args: []
+    cfn_nag:
+      enabled: true     # land in B.M2
+      extra_args: []
+    gitleaks:
+      enabled: true     # land in B.M2
+      extra_args: []
+    trufflehog:
+      enabled: false    # overlaps gitleaks; opt-in for precision boost
+      extra_args: []
+  guardrails:
+    max_files_scanned: 5000          # stops a misconfigured root from blowing up
+    max_findings_per_scanner: 2000   # caps DB-write volume per scanner
+    include_state_files: false       # `.tfstate` often has plaintext secrets
+    fail_open: true                  # one scanner crash != phase abort
+    network_allowlist: []            # for git/state-fetch sources
+    scanner_timeout_seconds: 600     # per-scanner subprocess kill-switch
+
+# ---------------------------------------------------------------------------
 # Compliance frameworks
 # ---------------------------------------------------------------------------
 compliance:
@@ -121,12 +175,12 @@ orchestrator:
 # Model IDs are Amazon Bedrock cross-region inference profile identifiers.
 # Verify that each model is available in your AWS account and region via
 # the Bedrock console before running. On-demand throughput model IDs
-# (e.g. anthropic.claude-sonnet-4-6-...-v1:0) also work as alternatives.
+# (e.g. anthropic.claude-haiku-4-5-...-v1:0) also work as alternatives.
 ai:
   enabled: true
   aws_region: "us-east-1"                              # Bedrock-enabled region
-  primary_model: "us.anthropic.claude-sonnet-4-6-20251101"   # Recon, app-test, triage
-  critical_model: "us.anthropic.claude-opus-4-7-20251101"    # Phase 4 chain discovery
+  primary_model: "us.anthropic.claude-haiku-4-5-20251001"    # Recon, app-test, triage
+  critical_model: "us.anthropic.claude-sonnet-4-6-20251101"  # Phase 4 chain discovery
   effort: "high"                       # Opus-only: low | medium | high | xhigh | max
   max_parallel_requests: 4        # Parallel Bedrock calls across AI phases
   max_retries: 3                  # Transient-error retry budget (throttling, 5xx)
@@ -162,11 +216,29 @@ mcp_servers:
   # Assesses AWS environment against the Well-Architected Security Pillar.
   # Requires read-only access to GuardDuty, Security Hub, Inspector, IAM Access Analyzer.
   # No extra setup — uvx installs it automatically.
+  # Credentials: inherited from os.environ via Orchestrator._bootstrap_aws_credentials.
+  # AWS_PROFILE is intentionally NOT set here — if it were, the uvx-installed
+  # server would try to resolve it against ~/.aws/config inside its own
+  # virtualenv, which fails when the user's default profile uses custom
+  # credential providers (e.g. aws-cli-login's `login_session = …`) that the
+  # uvx venv doesn't have the optional botocore deps for.
   cloud_audit:
     command: "uvx"
     args: ["awslabs.well-architected-security-mcp-server@latest"]
     env:
-      AWS_PROFILE: "${AWS_AUDIT_PROFILE}"
+      AWS_REGION: "us-east-1"
+      FASTMCP_LOG_LEVEL: "ERROR"
+
+  # AWS IAM MCP Server (AWS Labs official). Used by the graph IAM enrichment
+  # pass to enumerate roles, users, and inline policies. Read-only is the
+  # server's DEFAULT mode: every mutating tool (create/delete/attach/detach/
+  # update/access-key) requires the explicit `--allow-write` flag. We omit
+  # that flag here so Clementine cannot make IAM changes even if a downstream
+  # caller asks. Credentials: see the cloud_audit comment — env-var only.
+  iam:
+    command: "uvx"
+    args: ["awslabs.iam-mcp-server@latest"]
+    env:
       AWS_REGION: "us-east-1"
       FASTMCP_LOG_LEVEL: "ERROR"
 

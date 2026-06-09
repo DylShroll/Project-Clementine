@@ -129,8 +129,8 @@ Every Bedrock inference call (triage batches and discovery) is instrumented with
 
 ```text
 AI usage summary
-  triage_batch   claude-sonnet-4-6   in=12,340  out=4,210  cache_read=8,100
-  discovery      claude-opus-4-7     in=9,180   out=3,220  cache_read=0
+  triage_batch   claude-haiku-4-5    in=12,340  out=4,210  cache_read=8,100
+  discovery      claude-sonnet-4-6   in=9,180   out=3,220  cache_read=0
   ─────────────────────────────────────────────────────────────────────────
   TOTAL                               in=21,520  out=7,430  cache_read=8,100
 ```
@@ -221,8 +221,8 @@ The same IAM identity also needs permission to invoke Claude models via Bedrock:
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
       "Resource": [
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-6-*",
-        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-opus-4-7-*"
+        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-haiku-4-5-*",
+        "arn:aws:bedrock:*::foundation-model/us.anthropic.claude-sonnet-4-6-*"
       ]
     }
   ]
@@ -394,6 +394,68 @@ After a completed run, regenerate reports in a different format without re-runni
 
 ```bash
 clementine report --config clementine.yaml --format markdown
+```
+
+### Phase 0 — Infrastructure-as-Code only (Workstream B "Pith")
+
+Run only the IaC scanners against a Terraform / CloudFormation tree.
+Skips network reconnaissance, cloud audit, app testing, AI triage, and
+correlation — useful as a fast pre-deploy gate in CI/CD where you only
+care about IaC posture, not runtime behaviour.
+
+```bash
+# Local repo, single command, fail on HIGH+
+clementine iac \
+    --config clementine.yaml \
+    --source dir:./infra \
+    --format sarif \
+    --output ./ci-results \
+    --max-severity HIGH
+```
+
+Source shorthand forms accepted by `--source` (repeatable):
+
+| Form | Example | Use case |
+| --- | --- | --- |
+| `dir:<path>` | `dir:./infra` | local Terraform / CFN tree |
+| `plan:<path>` | `plan:./tfplan.json` | already-rendered plan |
+| `bundle:<path>` | `bundle:./iac-bundle.tar.gz` | offline collection from `scripts/iac_collect.sh` |
+| `git:<url>[#<ref>]` | `git:https://github.com/foo/bar#main` | one-shot review of a third-party module |
+| `scanner_import:<scanner>:<path>` | `scanner_import:checkov:./checkov.json` | fuse pre-recorded CI output without re-running |
+
+The companion `clementine check --phase 0 --max-severity HIGH` gives
+you the same gate without re-running Phase 0 — useful when the scan
+already happened and you just need the exit code.
+
+### GitHub Actions: IaC-only pre-deploy gate
+
+Tight, no-credentials-needed pipeline that fails the build on a HIGH
+or CRITICAL IaC finding before any AWS / Azure work runs:
+
+```yaml
+# .github/workflows/iac.yml
+name: IaC scan
+on: pull_request
+jobs:
+  iac:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Clementine
+        run: pip install -e .
+      - name: Phase 0 — IaC scan
+        run: |
+          clementine iac \
+            --config clementine.yaml \
+            --source dir:./infra \
+            --format sarif \
+            --output results \
+            --max-severity HIGH
+      - name: Upload SARIF to Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/report.sarif
 ```
 
 ### Debug logging
@@ -717,8 +779,8 @@ Restart the tool — the new pattern is picked up automatically.
 | `orchestrator.log_level` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `ai.enabled` | `true` | Set `false` to skip triage and discovery entirely |
 | `ai.aws_region` | `us-east-1` | AWS region for Bedrock inference |
-| `ai.primary_model` | `us.anthropic.claude-sonnet-4-6-20251101` | Bedrock model ID for recon, app-test, and triage |
-| `ai.critical_model` | `us.anthropic.claude-opus-4-7-20251101` | Bedrock model ID reserved for chain discovery |
+| `ai.primary_model` | `us.anthropic.claude-haiku-4-5-20251001` | Bedrock model ID for recon, app-test, and triage |
+| `ai.critical_model` | `us.anthropic.claude-sonnet-4-6-20251101` | Bedrock model ID reserved for chain discovery |
 | `ai.effort` | `high` | Opus extended-thinking depth (`low` / `medium` / `high` / `xhigh` / `max`) |
 | `ai.max_parallel_requests` | `4` | Concurrent Bedrock calls |
 | `ai.max_retries` | `3` | Retry budget for throttling / 5xx errors |

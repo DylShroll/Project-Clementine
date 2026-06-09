@@ -15,6 +15,7 @@ exception.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -28,6 +29,43 @@ from mcp.client.stdio import stdio_client
 from .config import HttpServerConfig, StdioServerConfig
 
 log = logging.getLogger(__name__)
+
+
+def unwrap_tool_result(result: Any) -> Any:
+    """Normalize an MCP tool response to its native JSON payload.
+
+    The MCP SDK delivers a tool's response as a ``list[TextContent | …]``
+    rather than the raw dict the server returned. Every consumer in
+    Clementine wants the dict, so we unwrap the single ``TextContent`` entry
+    and ``json.loads`` its text. Returns ``result`` unchanged when the
+    response already looks like a plain dict / list (HTTP transport path)
+    or when there's nothing to parse — so callers can route every tool
+    response through this helper without special-casing transports.
+    """
+    if result is None:
+        return None
+    # Already-unwrapped (HTTP transport, or test stubs).
+    if isinstance(result, dict):
+        return result
+    # Stdio path: list of mcp.types.* content blocks.
+    if isinstance(result, list):
+        if not result:
+            return None
+        first = result[0]
+        # Pydantic TextContent → .text. Dict-shaped TextContent → ["text"].
+        text = getattr(first, "text", None)
+        if text is None and isinstance(first, dict):
+            text = first.get("text")
+        if isinstance(text, str):
+            try:
+                return json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                # Not JSON — hand the raw string back, callers can decide.
+                return text
+        # Non-text content blocks (image/embedded resource) are passed through
+        # as-is rather than guessed at; the caller can inspect type names.
+        return first
+    return result
 
 # ---------------------------------------------------------------------------
 # Exceptions

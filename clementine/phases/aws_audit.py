@@ -23,7 +23,7 @@ from ..config import ClementineConfig
 from ..db import (
     Finding, FindingsDB, GraphRelationship, Severity
 )
-from ..mcp_client import MCPRegistry
+from ..mcp_client import MCPRegistry, unwrap_tool_result
 from ..scope import RateLimiter, ScopeGuard
 
 log = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ async def _build_knowledge_graph(
         for node in builder.get_nodes():
             await db.upsert_graph_node(
                 node_id=node.node_id,
-                node_type=node.node_type.value,
+                node_type=node.node_type,
                 label=node.label,
                 properties=node.properties,
                 is_internet_facing=node.is_internet_facing,
@@ -58,7 +58,10 @@ async def _build_knowledge_graph(
             nx_graph.number_of_edges(),
         )
     except Exception as exc:
-        log.warning("[Phase 2] Knowledge graph build failed (non-fatal): %s", exc)
+        # log.exception preserves the traceback so the failure can actually be
+        # diagnosed; the previous log.warning swallowed every stack frame and
+        # silently degraded the report to "IMDS-only graph".
+        log.exception("[Phase 2] Knowledge graph build failed (non-fatal): %s", exc)
 
 
 async def run_aws_audit(
@@ -146,19 +149,29 @@ async def _run_cloud_audit(
                     "check_enabled": True,
                 },
             )
+        # The stdio MCP transport delivers tool responses as
+        # [TextContent(text="<json>")]; unwrap to the JSON payload so the
+        # `enabled`/`findings` keys are actually visible. Without this, the
+        # `isinstance(result, dict)` check below silently dropped every
+        # response and the lane reported zero findings regardless of state.
+        result = unwrap_tool_result(result)
         if not result:
             continue
-        # result may be a list (raw content) or already a dict
-        if isinstance(result, list) and result:
-            result = result[0]
         if not isinstance(result, dict):
+            log.warning(
+                "[Phase 2] cloud-audit %s: unexpected response shape %s — skipping",
+                service, type(result).__name__,
+            )
             continue
         if not result.get("enabled", True):
-            log.debug("[Phase 2] cloud-audit: %s not enabled — skipping", service)
+            # Surface at info: a fully-disabled posture service is the most
+            # common reason Phase 2 returns zero cloud-audit findings, and the
+            # user shouldn't have to crank the log level to see it.
+            log.info("[Phase 2] cloud-audit: %s not enabled in this account — skipping", service)
             continue
         raw = result.get("findings") or []
         parsed = _normalize_cloud_audit(raw, service)
-        log.debug("[Phase 2] cloud-audit %s: %d findings", service, len(parsed))
+        log.info("[Phase 2] cloud-audit %s: %d findings", service, len(parsed))
         all_findings.extend(parsed)
 
     return all_findings
@@ -274,15 +287,30 @@ async def _run_prowler(
     """Run the Prowler CLI in a subprocess and parse its JSON output.
 
     The MCP server is used for knowledge enrichment only; for scan execution
-    we call the Prowler CLI directly (per design spec §3.3).
+    we call the Prowler CLI directly (per design spec §3.3). Credentials
+    travel via the env block populated upstream by
+    ``Orchestrator._bootstrap_aws_credentials``; we deliberately don't pass
+    ``--profile`` because that re-binds Prowler's boto3 session to the named
+    profile and skips the env-var creds we just resolved.
     """
-    frameworks = cfg.compliance.frameworks or ["cis_2.0_aws"]
+    import os
+
+    if not os.environ.get("AWS_ACCESS_KEY_ID"):
+        log.error(
+            "[Phase 2] Prowler skipped: AWS credentials not in environment. "
+            "Orchestrator credential bootstrap should have populated these — "
+            "check earlier log output for the resolution failure."
+        )
+        return []
+
+    frameworks = _normalize_prowler_frameworks(
+        cfg.compliance.frameworks or ["cis_2.0_aws"]
+    )
     with tempfile.TemporaryDirectory() as tmp:
         # Prowler v4 dropped the old 'json' format; use OCSF JSON instead.
         # Output file: <tmp>/prowler_output.ocsf.json
         cmd = [
             "prowler", "aws",
-            "--profile", cfg.aws.profile,
             "--output-formats", "json-ocsf",
             "--output-directory", tmp,
             "--output-filename", "prowler_output",
@@ -303,23 +331,33 @@ async def _run_prowler(
                 ),
             )
             if proc_result.returncode not in (0, 3):
-                # Prowler exits 3 when findings are present — any other non-zero is an error
-                log.warning(
-                    "[Phase 2] Prowler exited with code %d: %s",
-                    proc_result.returncode, proc_result.stderr[:500],
+                # Prowler exits 3 when findings are present — any other non-zero
+                # is a scan-level error. Surface stderr at error level and dump
+                # a longer slice so credential / config issues are diagnosable.
+                stderr_tail = (proc_result.stderr or "").strip()[-2000:]
+                log.error(
+                    "[Phase 2] Prowler exited with code %d. Stderr tail:\n%s",
+                    proc_result.returncode, stderr_tail,
                 )
 
-            # Glob for the output file — Prowler v4 names it prowler_output.ocsf.json
             json_files = sorted(Path(tmp).glob("prowler_output*.json"))
             if json_files:
                 with json_files[0].open() as fh:
                     raw = json.load(fh)
                 return _normalize_prowler(raw)
 
+            # No output file produced — Prowler bailed before writing anything.
+            # The stderr tail above tells us why, but log a one-line summary
+            # so the orchestrator log itself flags the lane as a no-op.
+            log.error(
+                "[Phase 2] Prowler produced no output file in %s — "
+                "treating Prowler lane as empty.", tmp,
+            )
+
         except FileNotFoundError:
-            log.warning(
-                "[Phase 2] Prowler CLI not found — skipping compliance scan. "
-                "Install with: pip install prowler"
+            log.error(
+                "[Phase 2] Prowler CLI not found on PATH — skipping compliance "
+                "scan. Install with: pip install prowler (or `brew install prowler`)."
             )
         except subprocess.TimeoutExpired:
             log.error("[Phase 2] Prowler timed out after 3600s")
@@ -473,10 +511,7 @@ async def _build_resource_graph(
             {"region": region, "aws_profile": cfg.aws.profile},
         )
 
-    if not result:
-        return
-    if isinstance(result, list) and result:
-        result = result[0]
+    result = unwrap_tool_result(result)
     if not isinstance(result, dict):
         return
 
@@ -492,6 +527,38 @@ async def _build_resource_graph(
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
+# Prowler v5 requires every compliance framework name to be suffixed with the
+# cloud-provider tag (e.g. `pci_4.0_aws`, not `pci_4.0`). The set below covers
+# the suffixes Prowler currently advertises so we don't append `_aws` to a name
+# that's already a non-AWS framework — that would silently turn a config typo
+# into a no-op scan.
+_PROWLER_PROVIDER_SUFFIXES = (
+    "_aws", "_azure", "_gcp", "_kubernetes", "_m365",
+    "_github", "_googleworkspace", "_nhn", "_oraclecloud", "_alibabacloud",
+)
+
+
+def _normalize_prowler_frameworks(frameworks: list[str]) -> list[str]:
+    """Append `_aws` to any framework name lacking a provider suffix.
+
+    Phase 2 is the AWS audit phase, so we treat bare names as AWS rather than
+    failing the scan. Logged at INFO so users running with legacy names see
+    the rewrite and can update their config without surprises.
+    """
+    normalized: list[str] = []
+    for fw in frameworks:
+        if fw.endswith(_PROWLER_PROVIDER_SUFFIXES):
+            normalized.append(fw)
+            continue
+        rewritten = f"{fw}_aws"
+        log.info(
+            "[Phase 2] Prowler framework %r has no provider suffix — rewriting to %r",
+            fw, rewritten,
+        )
+        normalized.append(rewritten)
+    return normalized
+
 
 def _infer_resource_type(raw: str) -> str:
     """Guess the resource type string from a raw service/resource name."""

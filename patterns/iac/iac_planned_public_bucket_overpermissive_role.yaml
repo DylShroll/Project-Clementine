@@ -1,0 +1,62 @@
+# Pattern: planned public S3 bucket co-located with planned over-broad IAM role
+#
+# Catches a class of mistake that recurs in greenfield Terraform: a
+# bucket meant to host static assets is provisioned with public ACLs
+# *and* a separate IAM role gets a wildcard `s3:*` policy. The two
+# findings live in different files and would each look benign in
+# isolation; together, they make any compromise of a workload using
+# that role a one-step pivot to bulk data exfiltration.
+#
+# Both pivots constrain `provenance: iac` so this pattern stays inside
+# Phase 0 — runtime data is not required to fire.
+
+pattern:
+  name: "Planned public S3 bucket + over-permissive IAM role"
+  severity: HIGH
+
+entry:
+  # tfsec emits AVD-AWS-0086 / AVD-AWS-0089 for public buckets;
+  # checkov emits CKV_AWS_53 / CKV_AWS_54 / CKV_AWS_55 / CKV_AWS_56.
+  # We match on the rule-id substring so any of them counts.
+  type: iac_finding
+  check: AVD-AWS-008
+  provenance: iac
+
+pivot:
+  - type: iac_finding
+    # Checkov's "IAM role allows all actions" / over-permissive role
+    # checks. CKV_AWS_111 = ensure no IAM policies have full *. We
+    # match on the family prefix so checkov rule renames don't break
+    # us.
+    check: CKV_AWS_111
+    provenance: iac
+    # "same account" trivially holds inside a single TF/CFN scan, so
+    # this is really just "both findings exist in the same scan".
+    relationship: same_account
+
+impact: >
+  If both planned resources deploy as configured, any workload assuming
+  the over-permissive role gets unrestricted s3:* access — and the
+  publicly-readable bucket lets *anyone* read its objects directly. A
+  reasonably-skilled attacker who compromises the role through any
+  later runtime issue (SSRF to IMDS, credential leak, container
+  escape) walks straight to bulk data exfiltration.
+
+remediation_priority:
+  - summary: "Block public access on the bucket (set block_public_acls / ignore_public_acls / restrict_public_buckets to true)"
+    effort: LOW
+    breaks_chain: true
+    iac_snippet: |
+      resource "aws_s3_bucket_public_access_block" "this" {
+        bucket                  = aws_s3_bucket.this.id
+        block_public_acls       = true
+        block_public_policy     = true
+        ignore_public_acls      = true
+        restrict_public_buckets = true
+      }
+  - summary: "Tighten the IAM role to least-privilege actions for its specific use case"
+    effort: MEDIUM
+    breaks_chain: false
+  - summary: "Add a deny-by-default SCP at the org level for s3:* in customer accounts"
+    effort: HIGH
+    breaks_chain: false

@@ -1058,6 +1058,47 @@ pre.code { font-family: var(--f-mono); font-size: 11.5px; background: var(--bg-3
 </section>
 {% endif %}
 
+<!-- ── IaC (Phase 0 / Workstream B "Pith") ── -->
+{% if iac_counts.values() | sum > 0 %}
+<section class="s" id="iac-planned">
+  <div class="s-head">
+    <span class="s-eyebrow">05.5 — Planned (IaC)</span>
+    <h2 class="s-title">Pre-deployment findings from Phase 0 scanners.</h2>
+    <span class="s-sub">{{ iac_counts.values() | sum }} finding{{ 's' if iac_counts.values() | sum != 1 }} across tfsec, checkov, cfn-nag, gitleaks, trufflehog</span>
+  </div>
+  <div class="posture-grid">
+    <div class="posture-card" style="border-style:dashed">
+      <h4 style="color:#fbbf24">&#x270D; Planned IaC</h4>
+      {% for sev in ['CRITICAL','HIGH','MEDIUM','LOW','INFO'] %}
+      <div class="posture-row">
+        <span>{{ sev }}</span>
+        <span>{{ iac_counts[sev] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% if iac_findings_top %}
+    <div class="posture-card" style="grid-column: span 2; border-style:dashed">
+      <h4 style="color:#fbbf24">&#x270D; Top IaC findings</h4>
+      <table style="width:100%; font-size:11px; font-family:var(--f-mono); border-collapse:collapse">
+        <tr style="text-align:left; color:var(--ink-3)">
+          <th style="padding:4px 6px">Severity</th>
+          <th style="padding:4px 6px">Rule</th>
+          <th style="padding:4px 6px">Location</th>
+        </tr>
+        {% for f in iac_findings_top %}
+        <tr>
+          <td style="padding:4px 6px"><span class="badge b-{{ f.severity.value | lower }}">{{ f.severity.value }}</span></td>
+          <td style="padding:4px 6px">{{ f.category }}</td>
+          <td style="padding:4px 6px; color:var(--ink-3)">{{ f.iac_source_path or '?' }}{% if f.iac_source_line %}:{{ f.iac_source_line }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
 <!-- ── Per-Cloud Posture ── -->
 {% if az_counts.values() | sum > 0 %}
 <section class="s" id="posture">
@@ -1654,20 +1695,51 @@ class HtmlReporter:
         # Per-cloud severity counts for the posture cards
         aws_counts: dict[str, int] = {s.value: 0 for s in Severity}
         az_counts: dict[str, int]  = {s.value: 0 for s in Severity}
+        # IaC (Phase 0 / Workstream B) findings get their own breakdown
+        # so reviewers can see at a glance how much of the posture story
+        # is "this would be CRITICAL on deployment" versus runtime live
+        # state.
+        iac_counts: dict[str, int] = {s.value: 0 for s in Severity}
+        iac_findings_top: list[Finding] = []
         for f in findings:
+            if (f.source or "").startswith("iac-scanner-"):
+                iac_counts[f.severity.value] += 1
+                continue
             provider = getattr(f, "provider", "aws") or "aws"
             if provider == "azure":
                 az_counts[f.severity.value] += 1
             else:
                 aws_counts[f.severity.value] += 1
 
-        # Multi-cloud chains — chains whose components span both providers
+        # Surface up to 8 high-severity IaC findings in the report so
+        # the section has concrete callouts, not just a count grid.
+        _sev_rank = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+        iac_findings_top = sorted(
+            (f for f in findings if (f.source or "").startswith("iac-scanner-")),
+            key=lambda f: (_sev_rank.get(f.severity.value, 99), f.iac_source_path or ""),
+        )[:8]
+
+        # Multi-cloud chains — chains whose components span both providers.
+        # ``get_chain_findings`` returns ``(Finding, ChainRole, int)`` tuples,
+        # which is what the Jinja template iterates as
+        # ``for comp_finding, role, order in cd.components`` further down. We
+        # destructure the same shape here. The dict / attribute branches are
+        # kept as defensive fallbacks for any future shape change so this code
+        # path doesn't silently drop multi-cloud chains again.
         finding_by_id = {f.id: f for f in findings}
         multi_cloud_chains: list[dict] = []
         for cd in chain_data:
             providers_seen: set[str] = set()
             for comp in cd["components"]:
-                fid = comp.finding_id if hasattr(comp, "finding_id") else comp.get("finding_id")
+                if isinstance(comp, tuple) and comp:
+                    finding_obj = comp[0]
+                    fid = getattr(finding_obj, "id", None)
+                elif hasattr(comp, "finding_id"):
+                    fid = comp.finding_id
+                elif isinstance(comp, dict):
+                    fid = comp.get("finding_id")
+                else:
+                    fid = None
                 if fid and fid in finding_by_id:
                     prov = getattr(finding_by_id[fid], "provider", "aws") or "aws"
                     providers_seen.add(prov)
@@ -1787,6 +1859,9 @@ class HtmlReporter:
             multi_cloud_chains=multi_cloud_chains,
             identity_hygiene=identity_hygiene,
             defender_prowler_drift=defender_prowler_drift,
+            # IaC additions (Phase 0 / Workstream B)
+            iac_counts=iac_counts,
+            iac_findings_top=iac_findings_top,
         )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

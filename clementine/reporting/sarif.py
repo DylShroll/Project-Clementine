@@ -91,21 +91,46 @@ class SarifReporter:
             "message": {"text": f.description[:2000]},
         }
 
-        # Location — use URL as artifactLocation if available, otherwise ARN
-        location_uri = f.resource_id or ""
-        if location_uri:
-            result["locations"] = [
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": location_uri},
-                    }
-                }
-            ]
+        # Location — for IaC findings (Phase 0 / Workstream B) we have a
+        # real file:line ref that SARIF tooling can deep-link to. For
+        # runtime findings we fall back to the resource_id (ARN, Azure
+        # resource id, etc.) so the result still has a stable URI.
+        physical: dict[str, Any] = {}
+        if f.iac_source_path:
+            physical["artifactLocation"] = {"uri": f.iac_source_path}
+            if f.iac_source_line:
+                physical["region"] = {"startLine": f.iac_source_line}
+        elif f.resource_id:
+            physical["artifactLocation"] = {"uri": f.resource_id}
+        if physical:
+            result["locations"] = [{"physicalLocation": physical}]
 
-        # Fingerprint for deduplication (hash of category + resource)
-        result["fingerprints"] = {
-            "clementine/v1": f"{f.category}:{f.resource_id or ''}",
+        # Fingerprint for deduplication. For IaC findings we key on the
+        # file:line so renaming a logical resource doesn't churn the
+        # fingerprint; for runtime findings we keep the existing
+        # category+resource shape.
+        if f.iac_source_path:
+            result["fingerprints"] = {
+                "clementine/v1": f"{f.category}:{f.iac_source_path}:{f.iac_source_line or 0}",
+            }
+        else:
+            result["fingerprints"] = {
+                "clementine/v1": f"{f.category}:{f.resource_id or ''}",
+            }
+
+        # Custom properties — round-trip provenance so downstream tools
+        # (GitHub Code Scanning UI, custom CI dashboards) can distinguish
+        # planned IaC findings from live runtime findings.
+        properties = {
+            "phase":      f.phase,
+            "source":     f.source,
+            "provenance": "iac" if (f.source or "").startswith("iac-scanner-") else "live",
         }
+        if f.iac_source_path:
+            properties["iac_source_path"] = f.iac_source_path
+            if f.iac_source_line:
+                properties["iac_source_line"] = f.iac_source_line
+        result["properties"] = properties
 
         # Remediation as a fix suggestion
         if f.remediation_summary:

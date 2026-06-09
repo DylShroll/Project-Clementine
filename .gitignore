@@ -21,3 +21,12 @@ project-clementine/reports
 
 # Ignore CLAUDE.md
 CLAUDE.md
+
+# Ignore roadmap.md
+roadmap.md
+
+# Ignore autopentest-ai data directory
+autopentest-ai/
+
+# Ignore other stuff
+*.pyc

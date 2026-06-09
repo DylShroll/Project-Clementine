@@ -54,16 +54,22 @@ _SEVERITY_ORDER = [
 @dataclass
 class EntryCondition:
     """Defines the initial vulnerability that triggers a pattern match."""
-    type: str                    # app_finding | infra_finding
+    type: str                    # app_finding | infra_finding | iac_finding | azure_finding
     category: Optional[str] = None   # e.g. "SSRF", "SQLi", or "XSS"
     wstg: Optional[str] = None       # WSTG code prefix for matching
     check: Optional[str] = None      # cloud-audit/Prowler check ID
+    # Provenance constraint (Workstream B). When set, the finding's source
+    # must match: ``iac`` → source startswith "iac-scanner-"; ``live`` →
+    # any non-IaC source; ``live+iac`` → matched IaC + live finding pair
+    # (handled at chain-instantiation time, not here). Leave None to
+    # accept any provenance.
+    provenance: Optional[str] = None
 
 
 @dataclass
 class PivotCondition:
     """Defines an infrastructure or application weakness that amplifies the entry."""
-    type: str                       # app_finding | infra_finding | any_finding
+    type: str                       # app_finding | infra_finding | iac_finding | any_finding | azure_finding
     check: Optional[str] = None
     wstg: Optional[str] = None
     category: Optional[str] = None
@@ -75,6 +81,7 @@ class PivotCondition:
     # admin role via CAN_ASSUME / CAN_PASS_ROLE only" instead of any-edge.
     via_edges: Optional[list[str]] = None
     via_max_hops: int = 4
+    provenance: Optional[str] = None    # See EntryCondition.provenance
 
 
 @dataclass
@@ -96,6 +103,7 @@ class AttackPattern:
             category=entry_data.get("category"),
             wstg=entry_data.get("wstg"),
             check=entry_data.get("check"),
+            provenance=entry_data.get("provenance"),
         )
 
         pivots = []
@@ -119,6 +127,7 @@ class AttackPattern:
                 severity=p.get("severity"),
                 via_edges=via_edges,
                 via_max_hops=via_max_hops,
+                provenance=p.get("provenance"),
             ))
 
         # Normalise remediation_priority to a list of dicts
@@ -247,6 +256,14 @@ class CorrelationEngine:
             return False
         if cond.type == "infra_finding" and finding.source not in ("cloud-audit", "prowler"):
             return False
+        if cond.type == "iac_finding" and not _is_iac_finding(finding):
+            return False
+
+        # Provenance filter (Workstream B). Only applied when the YAML
+        # supplied one. ``iac`` requires a Phase 0 / IaC scanner source;
+        # ``live`` requires anything else.
+        if cond.provenance and not _matches_provenance(finding, cond.provenance):
+            return False
 
         # Category / WSTG code match
         if cond.category and cond.category.lower() not in (finding.category or "").lower():
@@ -301,10 +318,16 @@ class CorrelationEngine:
                 continue
             if pivot.type == "infra_finding" and f.source not in ("cloud-audit", "prowler"):
                 continue
+            if pivot.type == "iac_finding" and not _is_iac_finding(f):
+                continue
             if pivot.type == "any_finding":
                 # Optionally filter by severity list
                 if pivot.severity and f.severity.value not in pivot.severity:
                     continue
+
+            # Provenance filter (Workstream B).
+            if pivot.provenance and not _matches_provenance(f, pivot.provenance):
+                continue
 
             # Check ID match
             if pivot.check and pivot.check not in (f.category or ""):
@@ -536,3 +559,42 @@ def _same_resource_group_heuristic(rid1: str, rid2: str) -> bool:
 
     k1, k2 = _rg_key(rid1), _rg_key(rid2)
     return bool(k1) and k1 == k2
+
+
+# ---------------------------------------------------------------------------
+# Provenance helpers (Workstream B — IaC analysis)
+# ---------------------------------------------------------------------------
+
+# Findings whose source matches this prefix were produced by Phase 0
+# IaC scanners (tfsec, checkov, cfn-nag, gitleaks, trufflehog).
+_IAC_SOURCE_PREFIX = "iac-scanner-"
+
+
+def _is_iac_finding(f: Finding) -> bool:
+    """True when the finding came from a Phase 0 IaC scanner."""
+    return f.phase == 0 and (f.source or "").startswith(_IAC_SOURCE_PREFIX)
+
+
+def _matches_provenance(f: Finding, provenance: str) -> bool:
+    """Check a finding against a YAML-supplied provenance constraint.
+
+    ``iac``       → finding came from an IaC scanner (Phase 0).
+    ``live``      → finding came from any non-IaC source.
+    ``live+iac``  → reserved for matched pairs; not currently used as a
+                    finding-level filter (the chain instantiator
+                    composes a live entry with an iac pivot or vice
+                    versa via the ``type`` constraint instead).
+                    Treat as accept-anything to avoid false negatives.
+    """
+    p = provenance.lower().strip()
+    if p == "iac":
+        return _is_iac_finding(f)
+    if p == "live":
+        return not _is_iac_finding(f)
+    if p == "live+iac":
+        return True
+    # Unknown provenance string — treat as a no-op so a typo in YAML
+    # doesn't silently drop matches. The pattern loader logs the file
+    # name on parse errors; a typo here surfaces as "this pattern
+    # produces too many chains" rather than zero.
+    return True

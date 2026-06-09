@@ -125,6 +125,12 @@ class Finding:
     resource_group: Optional[str] = None
     azure_resource_id: Optional[str] = None
     azure_region: Optional[str] = None
+    # IaC-specific fields (Phase 0 / Workstream B). file:line ref points at
+    # the offending IaC source location; used by SARIF physicalLocation and
+    # the HTML report's deep-link back to the editor. Both are NULL for
+    # findings not produced by an IaC scanner.
+    iac_source_path: Optional[str] = None
+    iac_source_line: Optional[int] = None
 
 
 @dataclass
@@ -338,19 +344,22 @@ CREATE TABLE IF NOT EXISTS azure_compliance_findings (
     raw             TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_findings_provider
-    ON findings(provider);
-CREATE INDEX IF NOT EXISTS idx_findings_azure_resource
-    ON findings(azure_resource_id);
-CREATE INDEX IF NOT EXISTS idx_graph_nodes_provider
-    ON graph_nodes(provider, tenant_id);
-CREATE INDEX IF NOT EXISTS idx_azure_ra_principal
-    ON azure_role_assignments(principal_id);
-CREATE INDEX IF NOT EXISTS idx_azure_ra_scope
-    ON azure_role_assignments(scope);
-CREATE INDEX IF NOT EXISTS idx_compliance_state
-    ON azure_compliance_findings(framework, state);
+-- Indexes that depend on columns added by `_MIGRATIONS` are created
+-- by `_apply_migrations` *after* the migrations run. Putting them here
+-- would fail on a fresh DB because the columns don't exist yet at
+-- schema-script time.
 """
+
+# Indexes that reference migration-added columns. Created after
+# `_apply_migrations` has run so the columns are guaranteed to exist.
+_POST_MIGRATION_INDEXES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS idx_findings_provider ON findings(provider)",
+    "CREATE INDEX IF NOT EXISTS idx_findings_azure_resource ON findings(azure_resource_id)",
+    "CREATE INDEX IF NOT EXISTS idx_graph_nodes_provider ON graph_nodes(provider, tenant_id)",
+    "CREATE INDEX IF NOT EXISTS idx_azure_ra_principal ON azure_role_assignments(principal_id)",
+    "CREATE INDEX IF NOT EXISTS idx_azure_ra_scope ON azure_role_assignments(scope)",
+    "CREATE INDEX IF NOT EXISTS idx_compliance_state ON azure_compliance_findings(framework, state)",
+]
 
 # Lightweight, idempotent migrations for DBs created before the triage /
 # ai-discovery columns existed. SQLite has no "ADD COLUMN IF NOT EXISTS" so
@@ -392,16 +401,32 @@ _MIGRATIONS: list[tuple[str, str, str]] = [
     # Azure columns on enrichment_status
     ("enrichment_status", "provider",  "ALTER TABLE enrichment_status ADD COLUMN provider TEXT DEFAULT 'aws'"),
     ("enrichment_status", "scope_id",  "ALTER TABLE enrichment_status ADD COLUMN scope_id TEXT"),
+    # IaC columns (Phase 0 / Workstream B). Findings carry a file:line ref
+    # back to the IaC source; graph nodes/edges carry a `provenance` flag
+    # that distinguishes planned (iac), live (live) and reconciled (live+iac)
+    # entities so correlation patterns can constrain on it.
+    ("findings",    "iac_source_path", "ALTER TABLE findings    ADD COLUMN iac_source_path TEXT"),
+    ("findings",    "iac_source_line", "ALTER TABLE findings    ADD COLUMN iac_source_line INTEGER"),
+    ("graph_nodes", "provenance",      "ALTER TABLE graph_nodes ADD COLUMN provenance TEXT DEFAULT 'live'"),
+    ("graph_edges", "provenance",      "ALTER TABLE graph_edges ADD COLUMN provenance TEXT DEFAULT 'live'"),
 ]
 
 
 async def _apply_migrations(conn: aiosqlite.Connection) -> None:
-    """Add columns introduced after the initial schema for pre-existing DBs."""
+    """Add columns introduced after the initial schema for pre-existing DBs.
+
+    Also creates indexes whose target columns are added by these
+    migrations — putting those indexes in the base schema script would
+    fail on a fresh DB because the columns don't exist yet when the
+    script runs.
+    """
     for table, column, ddl in _MIGRATIONS:
         async with conn.execute(f"PRAGMA table_info({table})") as cur:
             existing = {row["name"] for row in await cur.fetchall()}
         if column not in existing:
             await conn.execute(ddl)
+    for index_ddl in _POST_MIGRATION_INDEXES:
+        await conn.execute(index_ddl)
     await conn.commit()
 
 # ---------------------------------------------------------------------------
@@ -501,7 +526,8 @@ class FindingsDB:
                     remediation_cli, remediation_iac, remediation_doc_url,
                     compliance_mappings, confidence, is_validated, raw_source_data,
                     provider, tenant_id, subscription_id, management_group_id,
-                    resource_group, azure_resource_id, azure_region
+                    resource_group, azure_resource_id, azure_region,
+                    iac_source_path, iac_source_line
                 ) VALUES (
                     :id, :source, :phase, :severity, :category, :title, :description,
                     :resource_type, :resource_id, :aws_account_id, :aws_region,
@@ -509,7 +535,8 @@ class FindingsDB:
                     :remediation_cli, :remediation_iac, :remediation_doc_url,
                     :compliance_mappings, :confidence, :is_validated, :raw_source_data,
                     :provider, :tenant_id, :subscription_id, :management_group_id,
-                    :resource_group, :azure_resource_id, :azure_region
+                    :resource_group, :azure_resource_id, :azure_region,
+                    :iac_source_path, :iac_source_line
                 )
                 """,
                 {
@@ -759,8 +786,19 @@ class FindingsDB:
         azure_resource_id: Optional[str] = None,
         node_kind: Optional[str] = None,
         compressed_alias: Optional[str] = None,
+        provenance: str = "live",
     ) -> None:
-        """Persist a graph node; merges properties on conflict."""
+        """Persist a graph node; merges properties on conflict.
+
+        ``provenance`` distinguishes ``live`` nodes (built from a runtime
+        cloud audit) from ``iac`` nodes (projected from an IaC plan) and
+        ``live+iac`` (the same logical resource confirmed in both
+        sources). Phase 0 / Workstream B writes ``iac`` nodes; the
+        identity-merge sweep promotes them to ``live+iac`` when a live
+        equivalent is found.
+        """
+        if provenance not in ("live", "iac", "live+iac"):
+            raise ValueError(f"invalid provenance: {provenance!r}")
         props_json = json.dumps(properties)
         async with self._write_lock:
             await self._conn.execute(
@@ -768,8 +806,9 @@ class FindingsDB:
                 INSERT INTO graph_nodes (
                     node_id, node_type, label, properties, internet_facing,
                     provider, tenant_id, subscription_id, management_group_id,
-                    resource_group, azure_resource_id, node_kind, compressed_alias
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    resource_group, azure_resource_id, node_kind, compressed_alias,
+                    provenance
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(node_id) DO UPDATE SET
                     label = excluded.label,
                     node_type = excluded.node_type,
@@ -782,12 +821,18 @@ class FindingsDB:
                     resource_group = COALESCE(excluded.resource_group, resource_group),
                     azure_resource_id = COALESCE(excluded.azure_resource_id, azure_resource_id),
                     node_kind = COALESCE(excluded.node_kind, node_kind),
-                    compressed_alias = COALESCE(excluded.compressed_alias, compressed_alias)
+                    compressed_alias = COALESCE(excluded.compressed_alias, compressed_alias),
+                    -- Promote on disagreement: live + iac -> live+iac. Never demote.
+                    provenance = CASE
+                        WHEN provenance = excluded.provenance THEN provenance
+                        ELSE 'live+iac'
+                    END
                 """,
                 (
                     node_id, node_type, label[:500], props_json, int(is_internet_facing),
                     provider, tenant_id, subscription_id, management_group_id,
                     resource_group, azure_resource_id, node_kind, compressed_alias,
+                    provenance,
                 ),
             )
             await self._conn.commit()
@@ -813,18 +858,25 @@ class FindingsDB:
         condition_expr: Optional[str] = None,
         pim_eligible: bool = False,
         audience: Optional[str] = None,
+        provenance: str = "live",
     ) -> None:
         """Insert (or merge) a typed edge with optional properties.
 
         On UNIQUE conflict (same source/target/type), merges properties:
           * ``finding_ids`` lists are union-merged
           * other keys: existing values win
+          * ``provenance`` is promoted to ``live+iac`` whenever an
+            insertion's provenance disagrees with the row's existing
+            value (e.g. an iac edge being added on top of a live edge
+            for the same logical relationship).
         """
+        if provenance not in ("live", "iac", "live+iac"):
+            raise ValueError(f"invalid provenance: {provenance!r}")
         props = properties or {}
         async with self._write_lock:
             async with self._conn.execute(
                 """
-                SELECT edge_id, properties FROM graph_edges
+                SELECT edge_id, properties, provenance FROM graph_edges
                 WHERE source_id = ? AND target_id = ? AND edge_type = ?
                 """,
                 (source_id, target_id, edge_type),
@@ -838,14 +890,15 @@ class FindingsDB:
                     INSERT INTO graph_edges (
                         edge_id, source_id, target_id, edge_type, properties,
                         provider, edge_kind, role_definition_id, scope, scope_level,
-                        inherited, source_assignment_id, condition_expr, pim_eligible, audience
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        inherited, source_assignment_id, condition_expr, pim_eligible, audience,
+                        provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         edge_id, source_id, target_id, edge_type, json.dumps(props),
                         provider, edge_kind, role_definition_id, scope, scope_level,
                         int(inherited), source_assignment_id, condition_expr,
-                        int(pim_eligible), audience,
+                        int(pim_eligible), audience, provenance,
                     ),
                 )
             else:
@@ -862,9 +915,18 @@ class FindingsDB:
                         merged["finding_ids"] = existing
                     elif k not in merged:
                         merged[k] = v
+                # Promote provenance on disagreement (live + iac -> live+iac).
+                existing_prov = row["provenance"] or "live"
+                new_prov = (
+                    existing_prov if existing_prov == provenance else "live+iac"
+                )
                 await self._conn.execute(
-                    "UPDATE graph_edges SET properties = ? WHERE edge_id = ?",
-                    (json.dumps(merged), row["edge_id"]),
+                    """
+                    UPDATE graph_edges
+                    SET properties = ?, provenance = ?
+                    WHERE edge_id = ?
+                    """,
+                    (json.dumps(merged), new_prov, row["edge_id"]),
                 )
             await self._conn.commit()
 
@@ -1213,6 +1275,8 @@ def _row_to_finding(row: aiosqlite.Row) -> Finding:
         resource_group=d.get("resource_group"),
         azure_resource_id=d.get("azure_resource_id"),
         azure_region=d.get("azure_region"),
+        iac_source_path=d.get("iac_source_path"),
+        iac_source_line=d.get("iac_source_line"),
     )
 
 

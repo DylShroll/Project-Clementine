@@ -162,6 +162,143 @@ class ComplianceConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Infrastructure-as-Code configuration (Phase 0 / Workstream B "Pith")
+# ---------------------------------------------------------------------------
+#
+# Phase 0 runs IaC scanners (tfsec, checkov, cfn-nag, gitleaks, trufflehog)
+# against Terraform / CloudFormation source trees before the orchestrator
+# touches the network. Findings flow into the same DB as runtime findings
+# so a single report covers both planned and live posture.
+#
+# Design notes:
+#   * `enabled: false` by default — Phase 0 is fully opt-in. With no IaC
+#     sources configured the phase becomes a hard no-op and adds no
+#     overhead to the existing AWS-only / Azure-only flows.
+#   * `IacSourceConfig.type` is a discriminator: only the fields relevant
+#     to the chosen type are populated. Validation errors are surfaced
+#     at config-load time so misconfiguration fails loudly.
+#   * Scanner toggles live in a dict keyed by scanner name so adding a
+#     sixth scanner is a YAML edit, not a code change (matches roadmap §3
+#     "configuration-driven, never code-driven" guiding principle).
+
+# Source-type vocabulary. Order is intentional: the first six map to the
+# redundancy table in roadmap B.3; `scanner_import` reads pre-computed
+# scanner JSON output (the user already runs scanners in CI and wants
+# Clementine just to fuse the results into one report).
+IacSourceType = Literal[
+    "dir",                     # local directory of .tf / .yaml / .json
+    "plan",                    # terraform plan binary or JSON
+    "terraform_remote_state",  # S3 / GCS / azurerm state file
+    "cfn_stack",               # deployed CloudFormation stack via GetTemplate
+    "git",                     # remote repository to clone and scan
+    "bundle",                  # tarball produced by scripts/iac_collect.sh
+    "scanner_import",          # pre-computed scanner JSON output
+]
+
+
+class IacSourceConfig(BaseModel):
+    """One IaC source root.
+
+    Only the fields relevant to ``type`` are read; all other fields are
+    ignored. We keep them as one flat model (rather than a per-type
+    discriminated union) because every field is optional and the user
+    rarely supplies more than one source per config file.
+    """
+    type: IacSourceType
+    # Local-tree types (`dir`, `plan`)
+    path: Optional[Path] = None
+    # `plan` only: distinguishes `terraform show -json` JSON from binary plan
+    plan_format: Optional[Literal["binary", "json"]] = None
+    # `terraform_remote_state`
+    backend: Optional[Literal["s3", "gcs", "azurerm"]] = None
+    bucket: Optional[str] = None
+    key: Optional[str] = None
+    # `cfn_stack`
+    stack_name: Optional[str] = None
+    aws_region: Optional[str] = None
+    # `git` — credentials come from GITHUB_TOKEN env var; never written to YAML
+    url: Optional[str] = None
+    ref: Optional[str] = None
+    # `bundle`
+    bundle_path: Optional[Path] = None
+    # `scanner_import` — name of the producing scanner so the JSON parser
+    # knows which dialect to expect.
+    scanner: Optional[Literal[
+        "checkov", "tfsec", "cfn_nag", "gitleaks", "trufflehog"
+    ]] = None
+
+
+class IacGuardrails(BaseModel):
+    """Per-engagement safety limits for Phase 0.
+
+    Defaults are conservative: small bundles process fast, large bundles
+    don't blow up the DB, and scanner crashes don't abort the phase.
+    """
+    # Hard cap on the number of files any one source may contribute to a
+    # scan. Tarballs that exceed this are rejected; directories are walked
+    # in deterministic order until the cap is hit.
+    max_files_scanned: int = 5000
+    # Cap per-scanner finding count to keep the DB writable on huge repos
+    # full of secrets-shaped strings. Hitting the cap emits a partial
+    # `enrichment_status` row.
+    max_findings_per_scanner: int = 2000
+    # `.tfstate` files routinely contain plaintext secrets. Off by default.
+    include_state_files: bool = False
+    # When True, a single scanner crash records `unavailable` and the phase
+    # continues with the remaining scanners. When False, any crash aborts
+    # the phase. Production: True. CI on a small fixture: False (loud).
+    fail_open: bool = True
+    # Domains git/state-fetch is allowed to hit. Empty = no restriction
+    # (relies on Docker-network policy in M5). Honoured by the source
+    # resolver before any clone or download.
+    network_allowlist: list[str] = []
+    # Per-scanner subprocess timeout (seconds). Beyond this we kill the
+    # process and record a partial `enrichment_status`.
+    scanner_timeout_seconds: int = 600
+
+
+class IacScannerConfig(BaseModel):
+    """Per-scanner toggle.
+
+    `enabled: false` means the scanner is not invoked at all. `extra_args`
+    is forwarded verbatim to the subprocess so users can turn on individual
+    rule packs or tighten severity thresholds without forking the wrapper.
+    """
+    enabled: bool = True
+    extra_args: list[str] = []
+
+
+class IacConfig(BaseModel):
+    """Phase 0 IaC-scan configuration.
+
+    The default configuration is "off but ready": with `enabled: false`
+    Phase 0 does nothing. The scanner defaults below are what gets used
+    once the user flips `enabled: true` and adds at least one source.
+    """
+    enabled: bool = False
+    sources: list[IacSourceConfig] = []
+    # Default scanner set: checkov + tfsec for Terraform breadth, cfn_nag
+    # for CFN, gitleaks for secrets. trufflehog overlaps gitleaks heavily;
+    # it ships disabled and can be turned on for a precision boost.
+    scanners: dict[str, IacScannerConfig] = Field(default_factory=lambda: {
+        "checkov":    IacScannerConfig(enabled=True),
+        "tfsec":      IacScannerConfig(enabled=True),
+        "cfn_nag":    IacScannerConfig(enabled=True),
+        "gitleaks":   IacScannerConfig(enabled=True),
+        "trufflehog": IacScannerConfig(enabled=False),
+    })
+    guardrails: IacGuardrails = IacGuardrails()
+
+    # Be tolerant of `sources:` lines with only commented-out children —
+    # YAML parses those as None, but the user clearly intended an empty
+    # list. Same precedent as ScopeConfig._coerce_none_to_empty.
+    @field_validator("sources", mode="before")
+    @classmethod
+    def _coerce_sources_none_to_empty(cls, v: object) -> list:
+        return v if v is not None else []
+
+
+# ---------------------------------------------------------------------------
 # Reporting configuration
 # ---------------------------------------------------------------------------
 
@@ -227,6 +364,7 @@ class MCPServersConfig(BaseModel):
     # Existing servers
     autopentest: Optional[AnyServerConfig] = None
     cloud_audit: Optional[AnyServerConfig] = None
+    iam: Optional[AnyServerConfig] = None
     prowler: Optional[AnyServerConfig] = None
     aws_knowledge: Optional[HttpServerConfig] = None
     aws_docs: Optional[StdioServerConfig] = None
@@ -323,10 +461,10 @@ class AIConfig(BaseModel):
     # Primary model — cross-region inference profile ID for the heavy phases
     # (recon, app-test, triage). Verify availability in your account/region
     # via the Bedrock console before deploying.
-    primary_model: str = "us.anthropic.claude-sonnet-4-6-20251101"
-    # Critical model — reserved for novel attack-chain discovery. Opus earns
-    # its cost here; verify the cross-region inference profile is enabled.
-    critical_model: str = "us.anthropic.claude-opus-4-7-20251101"
+    primary_model: str = "us.anthropic.claude-haiku-4-5-20251001"
+    # Critical model — reserved for novel attack-chain discovery. Verify the
+    # cross-region inference profile is enabled in your account and region.
+    critical_model: str = "us.anthropic.claude-sonnet-4-6-20251101"
     # Effort controls extended-thinking budget on Opus 4.x (Sonnet ignores it).
     # Maps to budget_tokens: low=1024 medium=4096 high=10000 xhigh=16000 max=32000
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
@@ -349,6 +487,7 @@ class ClementineConfig(BaseModel):
     auth: AuthConfig = AuthConfig()
     aws: AWSConfig = AWSConfig()
     azure: AzureConfig = AzureConfig()
+    iac: IacConfig = IacConfig()
     compliance: ComplianceConfig = ComplianceConfig()
     reporting: ReportingConfig = ReportingConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
