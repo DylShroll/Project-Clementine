@@ -110,7 +110,7 @@ class AzureEdgeType(str, Enum):
 
 
 # Edges an attacker can traverse during exploitation — used by the correlation
-# engine's `via_edges` shortcut and AttackSurfaceAnalyzer.principals_reaching().
+# engine's `via_edges` shortcut and AttackSurfaceAnalyzer.paths_between().
 AZURE_IAM_TRAVERSAL_EDGES: frozenset[str] = frozenset({
     AzureEdgeType.CAN_ASSUME_MI.value,
     AzureEdgeType.HAS_RBAC_ROLE.value,

@@ -29,7 +29,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import tarfile
 import tempfile
 from dataclasses import dataclass, field

@@ -1,14 +1,13 @@
 """Attack surface analysis utilities wrapping the AWS knowledge graph."""
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Iterable
 
 import networkx as nx
 
-from .azure_model import AZURE_IAM_TRAVERSAL_EDGES, AZURE_PRINCIPAL_NODE_TYPES, AzureEdgeType, AzureNodeType
-from .model import AWSEdgeType, AWSNodeType, IAM_TRAVERSAL_EDGES, IMDS_NODE_ID
+from .azure_model import AzureEdgeType, AzureNodeType
+from .model import AWSEdgeType, AWSNodeType, IMDS_NODE_ID
 
 if TYPE_CHECKING:
     from ..db import Finding
@@ -200,66 +199,6 @@ class AttackSurfaceAnalyzer:
         self._g = graph
 
     # ------------------------------------------------------------------
-    # Path-finding
-    # ------------------------------------------------------------------
-
-    def find_attack_paths(
-        self, src: str, dst: str, max_hops: int = 6
-    ) -> list[list[str]]:
-        """Return simple paths from *src* to *dst*, capped at _MAX_PATHS."""
-        if src not in self._g or dst not in self._g:
-            return []
-        try:
-            gen = nx.all_simple_paths(self._g, src, dst, cutoff=max_hops)
-            paths: list[list[str]] = []
-            for p in gen:
-                paths.append(p)
-                if len(paths) >= _MAX_PATHS:
-                    break
-            return paths
-        except Exception:
-            return []
-
-    def find_paths_from_internet(
-        self, target: str, max_hops: int = 8
-    ) -> list[list[str]]:
-        """Find all paths from internet-facing nodes to *target*."""
-        if target not in self._g:
-            return []
-        sources = [
-            n for n, d in self._g.nodes(data=True)
-            if d.get("is_internet_facing") and n != target
-        ]
-        all_paths: list[list[str]] = []
-        for src in sources:
-            for p in self.find_attack_paths(src, target, max_hops):
-                all_paths.append(p)
-                if len(all_paths) >= _MAX_PATHS:
-                    return all_paths
-        return all_paths
-
-    # ------------------------------------------------------------------
-    # Blast radius
-    # ------------------------------------------------------------------
-
-    def blast_radius(
-        self, node_id: str, max_hops: int = 6
-    ) -> dict[str, list[str]]:
-        """Return nodes reachable from *node_id*, grouped by node type."""
-        if node_id not in self._g:
-            return {}
-        reachable = nx.single_source_shortest_path(
-            self._g, node_id, cutoff=max_hops
-        )
-        grouped: dict[str, list[str]] = {}
-        for n in reachable:
-            if n == node_id:
-                continue
-            ntype = self._g.nodes[n].get("node_type", "unknown")
-            grouped.setdefault(ntype, []).append(n)
-        return grouped
-
-    # ------------------------------------------------------------------
     # Subgraph extraction (for prompt compression)
     # ------------------------------------------------------------------
 
@@ -341,67 +280,6 @@ class AttackSurfaceAnalyzer:
                 if len(results) >= max_paths:
                     break
         return results
-
-    def principals_reaching(
-        self,
-        resource_id: str,
-        edge_types: "Iterable[str] | None" = None,
-        max_hops: int = 4,
-    ) -> list[str]:
-        """List principals that can reach *resource_id* within *max_hops*.
-
-        A principal is any IAM_USER / IAM_ROLE / EKS_SERVICE_ACCOUNT node.
-        ``edge_types`` defaults to :data:`IAM_TRAVERSAL_EDGES` so the answer
-        reflects "who has IAM access" rather than "who is graph-adjacent".
-        """
-        if resource_id not in self._g:
-            return []
-        # Default traversal set covers both AWS and Azure IAM edges.
-        allowed = (
-            set(edge_types) if edge_types is not None
-            else (set(IAM_TRAVERSAL_EDGES) | AZURE_IAM_TRAVERSAL_EDGES)
-        )
-        principal_types = {
-            # AWS principals
-            AWSNodeType.IAM_USER.value,
-            AWSNodeType.IAM_ROLE.value,
-            AWSNodeType.EKS_SERVICE_ACCOUNT.value,
-        } | AZURE_PRINCIPAL_NODE_TYPES
-        candidates = [
-            n for n, d in self._g.nodes(data=True)
-            if d.get("node_type") in principal_types and n != resource_id
-        ]
-        reaching: list[str] = []
-        for pid in candidates:
-            if self.paths_between(
-                pid, resource_id, edge_types=allowed,
-                max_hops=max_hops, max_paths=1,
-            ):
-                reaching.append(pid)
-        return reaching
-
-    def cycle_detect(
-        self, edge_types: "Iterable[str] | None" = None
-    ) -> list[list[str]]:
-        """Return simple cycles in the (optionally edge-filtered) graph.
-
-        Useful for surfacing IAM trust loops (role A trusts B, B trusts A),
-        which are usually misconfigurations rather than intentional. Callers
-        typically pass ``edge_types={'CAN_ASSUME'}``.
-        """
-        if edge_types is None:
-            view = self._g
-        else:
-            allowed = {str(e) for e in edge_types}
-            view = nx.DiGraph()
-            view.add_nodes_from(self._g.nodes(data=True))
-            for u, v, data in self._g.edges(data=True):
-                if data.get("type") in allowed:
-                    view.add_edge(u, v, **data)
-        try:
-            return [list(c) for c in nx.simple_cycles(view)]
-        except Exception:
-            return []
 
     # ------------------------------------------------------------------
     # Correlation helper (kept as a thin wrapper around paths_between)

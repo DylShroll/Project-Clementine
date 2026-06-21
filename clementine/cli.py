@@ -300,7 +300,6 @@ def iac(
     # remains the source of truth; the CLI lets a CI job point at a
     # different infra dir without committing a config change.
     if sources:
-        from .config import IacSourceConfig
         cfg.iac.sources = [_parse_iac_source_flag(s) for s in sources]
     cfg.iac.enabled = True                                       # mandatory for this command
     if include_state:

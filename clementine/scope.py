@@ -78,14 +78,6 @@ class ScopeGuard:
                     f"(matched exclusion prefix {excluded!r})"
                 )
 
-    def check_domain(self, domain: str) -> None:
-        """Raise ScopeError if *domain* is not in scope."""
-        if not self._is_domain_in_scope(domain.lower()):
-            raise ScopeError(
-                f"Domain is out of scope: {domain!r} — "
-                f"allowed: {self._include_domains}"
-            )
-
 
 # ---------------------------------------------------------------------------
 # Token-bucket rate limiter

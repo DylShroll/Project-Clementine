@@ -22,7 +22,6 @@ will populate edges between planned nodes; M3 ships nodes only.
 from __future__ import annotations
 
 import logging
-from typing import Iterable
 
 from ...db import Finding, FindingsDB
 

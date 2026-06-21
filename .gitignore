@@ -28,5 +28,6 @@ roadmap.md
 # Ignore autopentest-ai data directory
 autopentest-ai/
 
-# Ignore other stuff
+# Ignore Python bytecode caches
 *.pyc
+__pycache__/

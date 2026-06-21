@@ -17,7 +17,6 @@ import os
 import signal
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from .aws_creds import resolve_aws_env, verify_aws_credentials
 from .config import ClementineConfig

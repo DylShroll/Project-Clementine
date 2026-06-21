@@ -11,7 +11,6 @@ names), Bearer tokens, Base64 Basic-auth strings, and common secret patterns.
 
 from __future__ import annotations
 
-import base64
 import re
 
 # ---------------------------------------------------------------------------
@@ -106,16 +105,3 @@ def sanitize_evidence(evidence: dict) -> dict:
         result["raw"] = sanitize_text(result["raw"])
 
     return result
-
-
-def is_base64_credential(value: str) -> bool:
-    """Heuristic: return True if *value* looks like a Base64-encoded credential.
-
-    Used to redact Basic auth header values before storage.
-    """
-    try:
-        decoded = base64.b64decode(value + "==").decode("utf-8", errors="ignore")
-        # Basic auth is "username:password" — colon is the tell
-        return ":" in decoded and len(decoded) >= 3
-    except Exception:
-        return False

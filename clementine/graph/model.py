@@ -71,7 +71,7 @@ class AWSEdgeType(str, Enum):
 
 
 # Edges that an attacker can reasonably traverse during exploitation, used by
-# the `via_edges` correlation pattern shortcut and `principals_reaching`.
+# the `via_edges` correlation pattern shortcut and `paths_between` queries.
 IAM_TRAVERSAL_EDGES: frozenset[str] = frozenset({
     AWSEdgeType.CAN_ASSUME.value,
     AWSEdgeType.CAN_PASS_ROLE.value,

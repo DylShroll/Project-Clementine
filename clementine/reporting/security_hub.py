@@ -53,7 +53,6 @@ class SecurityHubReporter:
     async def push(self, findings: list[Finding]) -> None:
         """Push all findings to Security Hub in batches."""
         import boto3
-        import botocore.exceptions
 
         # Build the boto3 session using the configured AWS profile
         session = boto3.Session(profile_name=self._aws_profile, region_name=self._region)

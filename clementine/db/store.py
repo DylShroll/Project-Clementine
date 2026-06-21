@@ -1,14 +1,11 @@
-"""
-Async SQLite database layer for Project Clementine.
+"""Async SQLite persistence for Project Clementine — the FindingsDB handle.
 
-Manages the shared findings store used by all assessment phases.  All writes
-are serialised through an asyncio lock so concurrent phase tasks never
-corrupt the database.
+All writes are serialised through an asyncio lock so concurrent phase tasks
+never corrupt the database.
 
 Production note: for encrypted storage replace aiosqlite with pysqlcipher3
 (SQLCipher) and pass the passphrase via the CLEMENTINE_DB_KEY env var.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -16,418 +13,27 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
 import aiosqlite
 
+from .models import (
+    AttackChain,
+    ChainComponent,
+    ChainRole,
+    Finding,
+    GraphRelationship,
+    RemediationAction,
+    Severity,
+    _row_to_action,
+    _row_to_chain,
+    _row_to_finding,
+)
+from .schema import _SCHEMA_SQL, _apply_migrations
+
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Enumerations that mirror the DB constraints
-# ---------------------------------------------------------------------------
-
-class Severity(str, Enum):
-    CRITICAL = "CRITICAL"
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    INFO = "INFO"
-
-
-class EvidenceType(str, Enum):
-    HTTP_EXCHANGE = "http_exchange"
-    CLI_OUTPUT = "cli_output"
-    SCREENSHOT = "screenshot"
-    CONFIG_DUMP = "config_dump"
-
-
-class ResourceType(str, Enum):
-    URL = "url"
-    EC2 = "ec2"
-    S3 = "s3"
-    IAM = "iam"
-    RDS = "rds"
-    LAMBDA = "lambda"
-    VPC = "vpc"
-    SG = "sg"
-    OTHER = "other"
-
-
-class ChainRole(str, Enum):
-    ENTRY = "entry"
-    PIVOT = "pivot"
-    AMPLIFIER = "amplifier"
-
-
-class EffortLevel(str, Enum):
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-
-
-class GraphRelationship(str, Enum):
-    HOSTS = "hosts"
-    ROUTES_TO = "routes_to"
-    ATTACHED_TO = "attached_to"
-    HAS_ACCESS_TO = "has_access_to"
-    MEMBER_OF = "member_of"
-    # Knowledge graph edge types
-    CAN_ASSUME = "CAN_ASSUME"
-    HAS_PERMISSION = "HAS_PERMISSION"
-    CAN_PASS_ROLE = "CAN_PASS_ROLE"
-    INTERNET_FACING = "INTERNET_FACING"
-    SSRF_REACHABLE = "SSRF_REACHABLE"
-    HOSTS_APP = "HOSTS_APP"
-    IRSA_BOUND = "IRSA_BOUND"
-    OIDC_TRUSTS = "OIDC_TRUSTS"
-
-
-# ---------------------------------------------------------------------------
-# Dataclasses (lightweight DTO layer — no ORM overhead)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Finding:
-    """Normalised finding from any MCP source tool."""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    source: str = ""              # autopentest | cloud-audit | prowler
-    phase: int = 1                # 1-4
-    severity: Severity = Severity.INFO
-    category: str = ""            # WSTG code or CIS control ID
-    title: str = ""
-    description: str = ""
-    resource_type: Optional[str] = None
-    resource_id: Optional[str] = None
-    aws_account_id: Optional[str] = None
-    aws_region: Optional[str] = None
-    evidence_type: Optional[str] = None
-    evidence_data: Optional[dict] = None   # stored as JSON
-    remediation_summary: Optional[str] = None
-    remediation_cli: Optional[str] = None
-    remediation_iac: Optional[str] = None
-    remediation_doc_url: Optional[str] = None
-    compliance_mappings: Optional[dict] = None   # stored as JSON
-    confidence: float = 1.0
-    is_validated: bool = False
-    raw_source_data: Optional[dict] = None  # original tool JSON
-    # AI triage outputs — populated by the ai_triage phase, None until then
-    triage_confidence: Optional[float] = None
-    triage_is_false_positive: Optional[bool] = None
-    triage_notes: Optional[str] = None
-    # Azure-specific fields — populated for azure provider findings, None for AWS
-    provider: str = "aws"
-    tenant_id: Optional[str] = None
-    subscription_id: Optional[str] = None
-    management_group_id: Optional[str] = None
-    resource_group: Optional[str] = None
-    azure_resource_id: Optional[str] = None
-    azure_region: Optional[str] = None
-    # IaC-specific fields (Phase 0 / Workstream B). file:line ref points at
-    # the offending IaC source location; used by SARIF physicalLocation and
-    # the HTML report's deep-link back to the editor. Both are NULL for
-    # findings not produced by an IaC scanner.
-    iac_source_path: Optional[str] = None
-    iac_source_line: Optional[int] = None
-
-
-@dataclass
-class AttackChain:
-    """A correlated compound attack path produced by the correlation engine."""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    pattern_name: str = ""
-    severity: Severity = Severity.HIGH
-    narrative: str = ""
-    entry_finding_id: Optional[str] = None
-    breach_cost_low: Optional[float] = None
-    breach_cost_high: Optional[float] = None
-    # 'pattern' for rule-based matches; 'ai-discovered' for LLM-proposed chains
-    chain_source: str = "pattern"
-
-
-@dataclass
-class ChainComponent:
-    """Links a Finding to an AttackChain with a role and ordering."""
-    chain_id: str = ""
-    finding_id: str = ""
-    role: ChainRole = ChainRole.ENTRY
-    sequence_order: int = 0
-
-
-@dataclass
-class RemediationAction:
-    """Prioritised remediation step linked to a chain or individual finding."""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    chain_id: Optional[str] = None
-    finding_id: Optional[str] = None
-    priority_order: int = 0
-    action_summary: str = ""
-    effort_level: EffortLevel = EffortLevel.MEDIUM
-    breaks_chain: bool = False
-    cli_command: Optional[str] = None
-    iac_snippet: Optional[str] = None
-    aws_sop_ref: Optional[str] = None
-    doc_urls: Optional[list[str]] = None  # stored as JSON
-
-
-# ---------------------------------------------------------------------------
-# DDL — all table creation statements
-# ---------------------------------------------------------------------------
-
-_SCHEMA_SQL = """
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS findings (
-    id                       TEXT PRIMARY KEY,
-    source                   TEXT NOT NULL,
-    phase                    INTEGER NOT NULL,
-    severity                 TEXT NOT NULL,
-    category                 TEXT NOT NULL,
-    title                    TEXT NOT NULL,
-    description              TEXT NOT NULL,
-    resource_type            TEXT,
-    resource_id              TEXT,
-    aws_account_id           TEXT,
-    aws_region               TEXT,
-    evidence_type            TEXT,
-    evidence_data            TEXT,        -- JSON blob
-    remediation_summary      TEXT,
-    remediation_cli          TEXT,
-    remediation_iac          TEXT,
-    remediation_doc_url      TEXT,
-    compliance_mappings      TEXT,        -- JSON blob
-    confidence               REAL DEFAULT 1.0,
-    is_validated             INTEGER DEFAULT 0,
-    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    raw_source_data          TEXT,        -- JSON blob
-    -- LLM-triage outputs (NULL until the ai_triage phase has run)
-    triage_confidence        REAL,
-    triage_is_false_positive INTEGER,
-    triage_notes             TEXT
-);
-
-CREATE TABLE IF NOT EXISTS attack_chains (
-    id               TEXT PRIMARY KEY,
-    pattern_name     TEXT NOT NULL,
-    severity         TEXT NOT NULL,
-    narrative        TEXT NOT NULL,
-    entry_finding    TEXT REFERENCES findings(id),
-    breach_cost_low  REAL,
-    breach_cost_high REAL,
-    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    -- 'pattern' for rule-matched chains; 'ai-discovered' for LLM-proposed chains
-    chain_source     TEXT NOT NULL DEFAULT 'pattern'
-);
-
-CREATE TABLE IF NOT EXISTS chain_components (
-    chain_id       TEXT REFERENCES attack_chains(id) ON DELETE CASCADE,
-    finding_id     TEXT REFERENCES findings(id),
-    role           TEXT NOT NULL,
-    sequence_order INTEGER NOT NULL,
-    PRIMARY KEY (chain_id, finding_id)
-);
-
-CREATE TABLE IF NOT EXISTS remediation_actions (
-    id             TEXT PRIMARY KEY,
-    chain_id       TEXT REFERENCES attack_chains(id),
-    finding_id     TEXT REFERENCES findings(id),
-    priority_order INTEGER NOT NULL,
-    action_summary TEXT NOT NULL,
-    effort_level   TEXT NOT NULL,
-    breaks_chain   INTEGER DEFAULT 0,
-    cli_command    TEXT,
-    iac_snippet    TEXT,
-    aws_sop_ref    TEXT,
-    doc_urls       TEXT             -- JSON array
-);
-
--- Lightweight adjacency table for the correlation engine's resource graph
-CREATE TABLE IF NOT EXISTS resource_graph (
-    source_arn   TEXT NOT NULL,
-    target_arn   TEXT NOT NULL,
-    relationship TEXT NOT NULL,
-    PRIMARY KEY (source_arn, target_arn, relationship)
-);
-
--- Tracks the orchestrator state machine across phases
-CREATE TABLE IF NOT EXISTS assessment_state (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
--- Persistent node registry for the AWS knowledge graph.
--- Rebuilt into an in-memory NetworkX graph at Phase 4 correlation time.
-CREATE TABLE IF NOT EXISTS graph_nodes (
-    node_id         TEXT PRIMARY KEY,
-    node_type       TEXT NOT NULL,
-    label           TEXT NOT NULL,
-    properties      TEXT,           -- JSON blob (must include finding_ids list)
-    internet_facing INTEGER DEFAULT 0
-);
-
--- Richer edge store with provenance — supersedes resource_graph for any
--- edge type that needs properties (statement Sid, action list, finding_ids,
--- is_wildcard, etc.). resource_graph stays read-only for back-compat.
-CREATE TABLE IF NOT EXISTS graph_edges (
-    edge_id      TEXT PRIMARY KEY,
-    source_id    TEXT NOT NULL,
-    target_id    TEXT NOT NULL,
-    edge_type    TEXT NOT NULL,
-    properties   TEXT,           -- JSON blob (finding_ids, is_wildcard, actions, …)
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (source_id, target_id, edge_type)
-);
-
--- Per-enrichment-pass status so partial-failure runs can still produce
--- reports that disclose graph completeness ("IAM enumeration unavailable").
-CREATE TABLE IF NOT EXISTS enrichment_status (
-    pass_name TEXT PRIMARY KEY,
-    status    TEXT NOT NULL,     -- ok | partial | unavailable
-    detail    TEXT,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Per-call Claude API token accounting. One row per messages.parse() return.
--- Aggregated at end of run for the summary print and as a regression baseline
--- when tuning prompts / models.
-CREATE TABLE IF NOT EXISTS ai_usage (
-    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id                   TEXT NOT NULL,
-    call_site                TEXT NOT NULL,        -- e.g. 'discovery', 'triage_batch'
-    model                    TEXT NOT NULL,
-    input_tokens             INTEGER NOT NULL DEFAULT 0,
-    output_tokens            INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens    INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
-    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Azure-specific normalized tables (all new; backward-compat with AWS-only DBs)
-CREATE TABLE IF NOT EXISTS azure_role_assignments (
-    assignment_id        TEXT PRIMARY KEY,
-    tenant_id            TEXT NOT NULL,
-    principal_id         TEXT NOT NULL,
-    principal_type       TEXT,
-    role_definition_id   TEXT NOT NULL,
-    role_definition_name TEXT,
-    scope                TEXT NOT NULL,
-    scope_level          TEXT,
-    inherited            INTEGER DEFAULT 0,
-    pim_eligible         INTEGER DEFAULT 0,
-    condition_expr       TEXT,
-    discovered_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS azure_federated_credentials (
-    id                    TEXT PRIMARY KEY,
-    parent_resource_id    TEXT NOT NULL,
-    issuer                TEXT NOT NULL,
-    subject               TEXT NOT NULL,
-    audiences             TEXT,
-    name                  TEXT,
-    matched_aks_cluster_id TEXT,
-    matched_k8s_subject   TEXT
-);
-
-CREATE TABLE IF NOT EXISTS azure_compliance_findings (
-    id              TEXT PRIMARY KEY,
-    framework       TEXT NOT NULL,
-    control_id      TEXT NOT NULL,
-    resource_id     TEXT,
-    subscription_id TEXT,
-    state           TEXT NOT NULL,
-    severity        TEXT,
-    source          TEXT NOT NULL,
-    raw             TEXT
-);
-
--- Indexes that depend on columns added by `_MIGRATIONS` are created
--- by `_apply_migrations` *after* the migrations run. Putting them here
--- would fail on a fresh DB because the columns don't exist yet at
--- schema-script time.
-"""
-
-# Indexes that reference migration-added columns. Created after
-# `_apply_migrations` has run so the columns are guaranteed to exist.
-_POST_MIGRATION_INDEXES: list[str] = [
-    "CREATE INDEX IF NOT EXISTS idx_findings_provider ON findings(provider)",
-    "CREATE INDEX IF NOT EXISTS idx_findings_azure_resource ON findings(azure_resource_id)",
-    "CREATE INDEX IF NOT EXISTS idx_graph_nodes_provider ON graph_nodes(provider, tenant_id)",
-    "CREATE INDEX IF NOT EXISTS idx_azure_ra_principal ON azure_role_assignments(principal_id)",
-    "CREATE INDEX IF NOT EXISTS idx_azure_ra_scope ON azure_role_assignments(scope)",
-    "CREATE INDEX IF NOT EXISTS idx_compliance_state ON azure_compliance_findings(framework, state)",
-]
-
-# Lightweight, idempotent migrations for DBs created before the triage /
-# ai-discovery columns existed. SQLite has no "ADD COLUMN IF NOT EXISTS" so
-# we introspect the table and only issue ALTERs for missing columns.
-_MIGRATIONS: list[tuple[str, str, str]] = [
-    # (table, column, full ALTER TABLE clause)
-    ("findings",      "triage_confidence",        "ALTER TABLE findings ADD COLUMN triage_confidence REAL"),
-    ("findings",      "triage_is_false_positive", "ALTER TABLE findings ADD COLUMN triage_is_false_positive INTEGER"),
-    ("findings",      "triage_notes",             "ALTER TABLE findings ADD COLUMN triage_notes TEXT"),
-    ("attack_chains", "chain_source",             "ALTER TABLE attack_chains ADD COLUMN chain_source TEXT NOT NULL DEFAULT 'pattern'"),
-    # Azure columns on findings (all nullable; existing rows default to 'aws')
-    ("findings", "provider",            "ALTER TABLE findings ADD COLUMN provider TEXT DEFAULT 'aws'"),
-    ("findings", "tenant_id",           "ALTER TABLE findings ADD COLUMN tenant_id TEXT"),
-    ("findings", "subscription_id",     "ALTER TABLE findings ADD COLUMN subscription_id TEXT"),
-    ("findings", "management_group_id", "ALTER TABLE findings ADD COLUMN management_group_id TEXT"),
-    ("findings", "resource_group",      "ALTER TABLE findings ADD COLUMN resource_group TEXT"),
-    ("findings", "azure_resource_id",   "ALTER TABLE findings ADD COLUMN azure_resource_id TEXT"),
-    ("findings", "azure_region",        "ALTER TABLE findings ADD COLUMN azure_region TEXT"),
-    # Azure columns on graph_nodes
-    ("graph_nodes", "provider",            "ALTER TABLE graph_nodes ADD COLUMN provider TEXT DEFAULT 'aws'"),
-    ("graph_nodes", "tenant_id",           "ALTER TABLE graph_nodes ADD COLUMN tenant_id TEXT"),
-    ("graph_nodes", "subscription_id",     "ALTER TABLE graph_nodes ADD COLUMN subscription_id TEXT"),
-    ("graph_nodes", "management_group_id", "ALTER TABLE graph_nodes ADD COLUMN management_group_id TEXT"),
-    ("graph_nodes", "resource_group",      "ALTER TABLE graph_nodes ADD COLUMN resource_group TEXT"),
-    ("graph_nodes", "azure_resource_id",   "ALTER TABLE graph_nodes ADD COLUMN azure_resource_id TEXT"),
-    ("graph_nodes", "node_kind",           "ALTER TABLE graph_nodes ADD COLUMN node_kind TEXT"),
-    ("graph_nodes", "compressed_alias",    "ALTER TABLE graph_nodes ADD COLUMN compressed_alias TEXT"),
-    # Azure columns on graph_edges
-    ("graph_edges", "provider",             "ALTER TABLE graph_edges ADD COLUMN provider TEXT DEFAULT 'aws'"),
-    ("graph_edges", "edge_kind",            "ALTER TABLE graph_edges ADD COLUMN edge_kind TEXT"),
-    ("graph_edges", "role_definition_id",   "ALTER TABLE graph_edges ADD COLUMN role_definition_id TEXT"),
-    ("graph_edges", "scope",                "ALTER TABLE graph_edges ADD COLUMN scope TEXT"),
-    ("graph_edges", "scope_level",          "ALTER TABLE graph_edges ADD COLUMN scope_level TEXT"),
-    ("graph_edges", "inherited",            "ALTER TABLE graph_edges ADD COLUMN inherited INTEGER DEFAULT 0"),
-    ("graph_edges", "source_assignment_id", "ALTER TABLE graph_edges ADD COLUMN source_assignment_id TEXT"),
-    ("graph_edges", "condition_expr",       "ALTER TABLE graph_edges ADD COLUMN condition_expr TEXT"),
-    ("graph_edges", "pim_eligible",         "ALTER TABLE graph_edges ADD COLUMN pim_eligible INTEGER DEFAULT 0"),
-    ("graph_edges", "audience",             "ALTER TABLE graph_edges ADD COLUMN audience TEXT"),
-    # Azure columns on enrichment_status
-    ("enrichment_status", "provider",  "ALTER TABLE enrichment_status ADD COLUMN provider TEXT DEFAULT 'aws'"),
-    ("enrichment_status", "scope_id",  "ALTER TABLE enrichment_status ADD COLUMN scope_id TEXT"),
-    # IaC columns (Phase 0 / Workstream B). Findings carry a file:line ref
-    # back to the IaC source; graph nodes/edges carry a `provenance` flag
-    # that distinguishes planned (iac), live (live) and reconciled (live+iac)
-    # entities so correlation patterns can constrain on it.
-    ("findings",    "iac_source_path", "ALTER TABLE findings    ADD COLUMN iac_source_path TEXT"),
-    ("findings",    "iac_source_line", "ALTER TABLE findings    ADD COLUMN iac_source_line INTEGER"),
-    ("graph_nodes", "provenance",      "ALTER TABLE graph_nodes ADD COLUMN provenance TEXT DEFAULT 'live'"),
-    ("graph_edges", "provenance",      "ALTER TABLE graph_edges ADD COLUMN provenance TEXT DEFAULT 'live'"),
-]
-
-
-async def _apply_migrations(conn: aiosqlite.Connection) -> None:
-    """Add columns introduced after the initial schema for pre-existing DBs.
-
-    Also creates indexes whose target columns are added by these
-    migrations — putting those indexes in the base schema script would
-    fail on a fresh DB because the columns don't exist yet when the
-    script runs.
-    """
-    for table, column, ddl in _MIGRATIONS:
-        async with conn.execute(f"PRAGMA table_info({table})") as cur:
-            existing = {row["name"] for row in await cur.fetchall()}
-        if column not in existing:
-            await conn.execute(ddl)
-    for index_ddl in _POST_MIGRATION_INDEXES:
-        await conn.execute(index_ddl)
-    await conn.commit()
 
 # ---------------------------------------------------------------------------
 # Database class
@@ -586,14 +192,6 @@ class FindingsDB:
             rows = await cur.fetchall()
 
         return [_row_to_finding(row) for row in rows]
-
-    async def get_finding_by_id(self, finding_id: str) -> Optional[Finding]:
-        """Fetch a single finding by its UUID."""
-        async with self._conn.execute(
-            "SELECT * FROM findings WHERE id = ?", (finding_id,)
-        ) as cur:
-            row = await cur.fetchone()
-        return _row_to_finding(row) if row else None
 
     async def update_finding_triage(
         self,
@@ -757,14 +355,6 @@ class FindingsDB:
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [row["target_arn"] for row in rows]
-
-    async def get_findings_by_resource(self, resource_id: str) -> list[Finding]:
-        """Return all findings whose resource_id matches the given ARN or URL."""
-        async with self._conn.execute(
-            "SELECT * FROM findings WHERE resource_id = ?", (resource_id,)
-        ) as cur:
-            rows = await cur.fetchall()
-        return [_row_to_finding(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Knowledge graph nodes
@@ -969,22 +559,6 @@ class FindingsDB:
                 (pass_name, status, detail),
             )
             await self._conn.commit()
-
-    async def get_enrichment_status(self) -> list[dict]:
-        """Return all enrichment-status rows for report disclosure."""
-        async with self._conn.execute(
-            "SELECT pass_name, status, detail, updated_at FROM enrichment_status"
-        ) as cur:
-            rows = await cur.fetchall()
-        return [
-            {
-                "pass_name": r["pass_name"],
-                "status": r["status"],
-                "detail": r["detail"],
-                "updated_at": r["updated_at"],
-            }
-            for r in rows
-        ]
 
     # ------------------------------------------------------------------
     # Azure-specific tables
@@ -1230,82 +804,3 @@ class FindingsDB:
                 is_internet_facing=bool(row["internet_facing"]),
             ))
         return nodes
-
-
-# ---------------------------------------------------------------------------
-# Row → dataclass helpers
-# ---------------------------------------------------------------------------
-
-def _row_to_finding(row: aiosqlite.Row) -> Finding:
-    """Convert a raw SQLite row dict into a Finding dataclass."""
-    d = dict(row)
-    return Finding(
-        id=d["id"],
-        source=d["source"],
-        phase=d["phase"],
-        severity=Severity(d["severity"]),
-        category=d["category"],
-        title=d["title"],
-        description=d["description"],
-        resource_type=d.get("resource_type"),
-        resource_id=d.get("resource_id"),
-        aws_account_id=d.get("aws_account_id"),
-        aws_region=d.get("aws_region"),
-        evidence_type=d.get("evidence_type"),
-        evidence_data=json.loads(d["evidence_data"]) if d.get("evidence_data") else None,
-        remediation_summary=d.get("remediation_summary"),
-        remediation_cli=d.get("remediation_cli"),
-        remediation_iac=d.get("remediation_iac"),
-        remediation_doc_url=d.get("remediation_doc_url"),
-        compliance_mappings=json.loads(d["compliance_mappings"]) if d.get("compliance_mappings") else None,
-        confidence=d.get("confidence", 1.0),
-        is_validated=bool(d.get("is_validated", 0)),
-        raw_source_data=json.loads(d["raw_source_data"]) if d.get("raw_source_data") else None,
-        triage_confidence=d.get("triage_confidence"),
-        triage_is_false_positive=(
-            bool(d["triage_is_false_positive"])
-            if d.get("triage_is_false_positive") is not None
-            else None
-        ),
-        triage_notes=d.get("triage_notes"),
-        provider=d.get("provider") or "aws",
-        tenant_id=d.get("tenant_id"),
-        subscription_id=d.get("subscription_id"),
-        management_group_id=d.get("management_group_id"),
-        resource_group=d.get("resource_group"),
-        azure_resource_id=d.get("azure_resource_id"),
-        azure_region=d.get("azure_region"),
-        iac_source_path=d.get("iac_source_path"),
-        iac_source_line=d.get("iac_source_line"),
-    )
-
-
-def _row_to_chain(row: aiosqlite.Row) -> AttackChain:
-    d = dict(row)
-    return AttackChain(
-        id=d["id"],
-        pattern_name=d["pattern_name"],
-        severity=Severity(d["severity"]),
-        narrative=d["narrative"],
-        entry_finding_id=d.get("entry_finding"),
-        breach_cost_low=d.get("breach_cost_low"),
-        breach_cost_high=d.get("breach_cost_high"),
-        chain_source=d.get("chain_source") or "pattern",
-    )
-
-
-def _row_to_action(row: aiosqlite.Row) -> RemediationAction:
-    d = dict(row)
-    return RemediationAction(
-        id=d["id"],
-        chain_id=d.get("chain_id"),
-        finding_id=d.get("finding_id"),
-        priority_order=d["priority_order"],
-        action_summary=d["action_summary"],
-        effort_level=EffortLevel(d["effort_level"]),
-        breaks_chain=bool(d.get("breaks_chain", 0)),
-        cli_command=d.get("cli_command"),
-        iac_snippet=d.get("iac_snippet"),
-        aws_sop_ref=d.get("aws_sop_ref"),
-        doc_urls=json.loads(d["doc_urls"]) if d.get("doc_urls") else None,
-    )

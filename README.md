@@ -2,7 +2,7 @@
 
 Automated penetration-testing orchestrator. Coordinates MCP servers to deliver assessments spanning application-layer vulnerabilities (OWASP WSTG), AWS infrastructure misconfigurations, and Azure cloud misconfigurations — then automatically correlates them into compound attack chains that neither layer of tooling can find on its own.
 
-The engine builds a **NetworkX-backed multi-cloud knowledge graph** during each assessment, enabling multi-hop attack path traversal, edge-typed IAM topology queries, blast radius calculation, and a visual attack surface map in the HTML report.
+The engine builds a **NetworkX-backed multi-cloud knowledge graph** during each assessment, enabling multi-hop attack path traversal, edge-typed IAM topology queries, and a visual attack surface map in the HTML report.
 
 ```text
 SSRF (medium)  +  IMDSv1 enabled  +  overprivileged IAM role  =  full AWS account takeover (critical)
@@ -83,11 +83,9 @@ Phase 2b runs both azure-mcp resource enumeration and prowler-mcp compliance sca
 
 ## Graph queries
 
-`AttackSurfaceAnalyzer` provides three queryable operations over the unified multi-cloud graph:
+`AttackSurfaceAnalyzer` provides edge-typed path queries over the unified multi-cloud graph:
 
-- `paths_between(src, dst, edge_types=None, max_hops=4)` — returns concrete annotated paths (list of `(node, edge_type)` tuples) optionally filtered to specific edge types. AWS and Azure edge types are both accepted.
-- `principals_reaching(resource_id, edge_types=...)` — returns every principal (IAM role, Entra user, service principal, managed identity) that can ultimately reach a given resource. Traversal defaults include both `IAM_TRAVERSAL_EDGES` (AWS) and `AZURE_IAM_TRAVERSAL_EDGES`.
-- `cycle_detect()` — flags trust cycles in both IAM (role-assume loops) and Azure RBAC (SP owns app registration that resets SP credentials).
+- `paths_between(src, dst, edge_types=None, max_hops=4)` — returns concrete annotated paths (list of `(node, edge_type)` tuples) optionally filtered to specific edge types. AWS and Azure edge types are both accepted. `are_related_multi_hop()` wraps this for the correlation engine's `via_edges` reachability checks.
 
 ---
 
@@ -856,6 +854,6 @@ clementine run --config clementine.yaml
 - Additional correlation patterns based on emerging exploit paths
 - Increase backoff time on `clementine.mcp_client` failures during rate-limit errors
 - Incremental / re-run discovery: cache the static findings+graph block across runs so only deltas are sent to the model
-- `cycle_detect()` findings: surface IAM trust loops as their own finding category in the correlation engine
+- Detect IAM trust loops (role-assume cycles, Azure RBAC self-reset chains) and surface them as their own finding category in the correlation engine
 - Switch `AttackSurfaceAnalyzer` to `nx.MultiDiGraph` to properly represent multiple edge types between the same node pair
 - Multi-tenant Azure support (`--multi-tenant` flag for cross-tenant federation assessment)

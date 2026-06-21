@@ -230,8 +230,6 @@ async def _classify_azure_dns(
     so Phase 2b enrichment can correlate it with KQL-discovered resources.
     """
     try:
-        from ..graph import GraphBuilder
-        builder = GraphBuilder(db)
         azure_hints: list[tuple[str, str]] = []
 
         for domain in cfg.target.scope.include_domains:
@@ -266,7 +264,6 @@ async def _detect_azure_waf(
     and X-Cache with Azure values. Emits a graph node for each detected service.
     This is a passive observation from an HTTP HEAD request — no active probing.
     """
-    import asyncio
     import aiohttp
 
     target_url = cfg.target.url

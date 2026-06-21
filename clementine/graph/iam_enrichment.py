@@ -575,7 +575,7 @@ async def _persist_node(
     Without this, the in-memory node added by ``builder._add_node`` is lost
     when the graph is rebuilt from the DB, and `_add_edge`'s auto-stub path
     re-creates the node as ``node_type='unknown'`` — which silently breaks
-    queries that filter by node type (principals_reaching, attack-surface
+    queries that filter by node type (paths_between, attack-surface
     Cytoscape rendering, etc.).
     """
     try:
